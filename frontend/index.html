@@ -785,6 +785,36 @@
     const filterEl = document.getElementById('filter');
     const statusEl = document.getElementById('status');
 
+    // Initial-load behaviour: on the first successful refresh, snap the view
+    // to the densest cluster of assets so the user lands on something useful
+    // instead of the hard-coded Colombo centre. Only fires once per page load.
+    let initialFitDone = false;
+
+    function fitToDensest() {
+      const features = vectorSource.getFeatures();
+      if (!features.length) return;
+      // Grid-bin in WGS84; ~0.05° ≈ 5 km cells. Whichever cell holds the most
+      // points is "the place with the most points" for our purposes.
+      const cellSize = 0.05;
+      const bins = new Map();
+      for (const f of features) {
+        const [lon, lat] = ol.proj.toLonLat(f.getGeometry().getCoordinates());
+        const key = `${Math.round(lon / cellSize)}_${Math.round(lat / cellSize)}`;
+        if (!bins.has(key)) bins.set(key, []);
+        bins.get(key).push(f);
+      }
+      let densest = null;
+      for (const group of bins.values()) {
+        if (!densest || group.length > densest.length) densest = group;
+      }
+      if (!densest || densest.length < 2) return; // sparse — keep default view
+      const extent = ol.extent.createEmpty();
+      densest.forEach(f => ol.extent.extend(extent, f.getGeometry().getExtent()));
+      map.getView().fit(extent, {
+        padding: [80, 80, 80, 80], maxZoom: 13, duration: 500,
+      });
+    }
+
     async function refresh() {
       const type = filterEl.value;
       const url  = type ? `${API_BASE}?type=${encodeURIComponent(type)}` : API_BASE;
@@ -796,6 +826,10 @@
         });
         vectorSource.clear();
         vectorSource.addFeatures(features);
+        if (!initialFitDone && features.length > 0) {
+          fitToDensest();
+          initialFitDone = true;
+        }
         statusEl.textContent =
           `${features.length} asset${features.length === 1 ? '' : 's'} · `
           + new Date().toLocaleTimeString();
@@ -984,6 +1018,24 @@
     const heatmapHoursEl = document.getElementById('heatmap-hours');
     const heatmapStatusEl = document.getElementById('heatmap-status');
 
+    // Zoom-aware kernel sizing. At low zoom (whole island) the kernel must
+    // be tight or every cluster becomes a giant blob; at high zoom (single
+    // city) it should be looser so individual points blend into a smooth
+    // continuous surface (Lec 1a: continuous-field view of discrete obs).
+    function updateHeatmapStyle() {
+      if (!heatmapLayer.getVisible()) return;
+      const z = map.getView().getZoom() || 8;
+      const radius = Math.max(3, Math.min(18, Math.round((z - 5) * 1.6)));
+      const blur   = Math.max(10, Math.min(34, Math.round(radius * 2.0)));
+      heatmapLayer.setRadius(radius);
+      heatmapLayer.setBlur(blur);
+    }
+    let heatmapZoomTimer = null;
+    map.getView().on('change:resolution', () => {
+      clearTimeout(heatmapZoomTimer);
+      heatmapZoomTimer = setTimeout(updateHeatmapStyle, 80);
+    });
+
     async function refreshHeatmap() {
       if (!heatmapToggle.checked) {
         heatmapLayer.setVisible(false);
@@ -1002,6 +1054,7 @@
         heatmapSource.clear();
         heatmapSource.addFeatures(features);
         heatmapLayer.setVisible(true);
+        updateHeatmapStyle();   // re-apply zoom-aware sizing now visible
         const n = data.metadata?.count ?? features.length;
         const t = data.metadata?.type || 'all';
         heatmapStatusEl.textContent = `${n} positions · ${t} · last ${heatmapHoursEl.value}h`;
