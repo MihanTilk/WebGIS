@@ -1,0 +1,27 @@
+# Assignment artefacts not meant for the public repo
+WebGISApplication.pdf
+*.docx
+~$*.docx
+
+# Secrets
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+backend/.venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Misc
+*.log
+*.tmp
+docs/screenshots/*.tmp
