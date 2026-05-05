@@ -23,9 +23,8 @@ DB = dict(
 
 VALID_TYPES = {"vehicle", "person", "equipment"}
 
-# Distances in metres (geography type), durations in seconds. Type pairs are
-# unordered. Thresholds are loosened from realistic values so events fire
-# during a short demo; in-line comments give the realistic equivalents.
+# Distances in metres (geography), durations in seconds. Type pairs are unordered.
+# Thresholds are loosened from realistic values so events fire during a short demo.
 INTERACTION_RULES = [
     # (type_a, type_b, distance_m, min_duration_s, kind)
     ("vehicle", "person", 150.0, 4, "PICKUP"), # real-world: ~10 m, 30 s
@@ -36,8 +35,7 @@ INTERACTION_RULES = [
 ]
 VALID_KINDS = {r[4] for r in INTERACTION_RULES}
 
-# Sri Lanka Grid (EPSG:5234, Transverse Mercator). Used to show
-# Easting/Northing in popups alongside WGS84 lat/lon.
+# Sri Lanka Grid (EPSG:5234) — Easting/Northing shown in popups alongside lat/lon.
 SRI_LANKA_GRID_SRID = 5234
 
 GEOM_SELECT = (
@@ -52,8 +50,7 @@ def get_conn():
 
 
 def utc_iso(dt):
-    """ISO 8601 with `Z`. DB stores UTC in naive timestamps; without the
-    suffix the browser parses them as local time."""
+    """ISO 8601 with `Z`. DB stores naive UTC; without `Z` the browser reads them as local time."""
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -88,8 +85,7 @@ def row_to_feature(row):
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    """Liveness probe — DB-independent so it passes during a fresh deploy
-    before the schema has been loaded. Render points its health check here."""
+    """Liveness probe — DB-independent so it passes on a fresh deploy before the schema is loaded."""
     return jsonify({"ok": True})
 
 
@@ -166,8 +162,7 @@ def snapshot():
     if not at:
         return jsonify({"error": "Missing 'at' query parameter (ISO timestamp)"}), 400
     try:
-        # Frontend sends UTC; DB column is TIMESTAMP-without-tz holding UTC.
-        # Strip tz so the comparison works regardless of server tz.
+        # Frontend sends UTC; DB stores naive UTC. Strip tz so the comparison is server-tz-independent.
         if at.endswith("Z"):
             aware = datetime.fromisoformat(at[:-1]).replace(tzinfo=timezone.utc)
         else:
@@ -218,8 +213,7 @@ def snapshot():
 
 @app.route("/api/heatmap", methods=["GET"])
 def heatmap():
-    """Historical positions in a time window. Each row gets a recency-decay
-    weight in [0,1] so the heatmap emphasises recent dwell."""
+    """Historical positions in a time window, weighted by recency so recent dwell stands out."""
     try:
         hours = max(1, min(int(request.args.get("hours", 24)), 24 * 7))
         limit = max(1, min(int(request.args.get("limit", 5000)), 20000))
@@ -255,8 +249,7 @@ def heatmap():
     window_seconds = hours * 3600
     features = []
     for r in rows:
-        # Linear decay: weight=1 now, weight=0 at the edge of the window.
-        # age_s comes back as Decimal — cast for the float subtract.
+        # Linear decay: weight=1 now, 0 at the window edge. age_s is Decimal — cast for the float math.
         age_s = float(r["age_s"])
         weight = max(0.0, 1.0 - (age_s / window_seconds))
         features.append(
@@ -299,8 +292,7 @@ def get_asset_history(asset_id):
             if asset is None:
                 return jsonify({"error": "Not found"}), 404
 
-            # Most recent `limit` rows (DESC + LIMIT), then re-sort ASC so
-            # the LineString draws oldest → newest.
+            # Most recent `limit` rows (DESC + LIMIT) then re-sorted ASC so the line draws oldest → newest.
             cur.execute(
                 """
                 SELECT recorded_at, lon, lat
@@ -370,8 +362,7 @@ def get_asset_history(asset_id):
 
 @app.route("/api/assets/<int:asset_id>/motion", methods=["GET"])
 def get_motion(asset_id):
-    """Speed (m/s, km/h) and heading (degrees clockwise from north) from
-    the two most recent history rows."""
+    """Speed (m/s, km/h) and heading (degrees from north) from the two most recent history rows."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -429,8 +420,7 @@ def get_motion(asset_id):
 
 @app.route("/api/proximity", methods=["GET"])
 def proximity():
-    """Assets within radius_m of (lon, lat). Uses ST_DWithin on the
-    geography type so the radius is real metres regardless of latitude."""
+    """Assets within radius_m of (lon, lat). ST_DWithin on geography → real metres regardless of latitude."""
     try:
         lon = float(request.args["lon"])
         lat = float(request.args["lat"])
@@ -585,8 +575,7 @@ _DURATION_VALUES_SQL = ",".join(
 
 @app.route("/api/interactions/detect", methods=["POST"])
 def detect_interactions():
-    """One detection sweep. Opens new interactions for type-pairs within
-    range, closes those that have drifted out. Idempotent."""
+    """One sweep: opens new interactions for in-range type-pairs, closes ones that drifted out. Idempotent."""
     open_sql = f"""
         WITH rules(a_t, b_t, dist_m, kind) AS (VALUES {_RULE_VALUES_SQL}),
         candidate_pairs AS (
@@ -655,8 +644,7 @@ def detect_interactions():
 
 @app.route("/api/interactions", methods=["GET"])
 def list_interactions():
-    """Recent interactions, filtered by min-duration per kind, plus optional
-    `kind`, `since` (ISO ts), `limit`, and `active_only` query params."""
+    """Recent interactions, filtered by min-duration per kind. Optional ?kind, ?since, ?limit, ?active_only."""
     kind = request.args.get("kind")
     if kind is not None and kind not in VALID_KINDS:
         return jsonify({"error": f"kind must be one of {sorted(VALID_KINDS)}"}), 400
@@ -671,8 +659,7 @@ def list_interactions():
                 aware = datetime.fromisoformat(since)
                 if aware.tzinfo is None:
                     aware = aware.replace(tzinfo=timezone.utc)
-            # Compare naive-UTC against the TIMESTAMP-without-tz column —
-            # see snapshot() above for the reasoning.
+            # Naive UTC to match the column type — see snapshot() for the reasoning.
             parsed_since = aware.astimezone(timezone.utc).replace(tzinfo=None)
         except ValueError:
             return jsonify({"error": "'since' must be a valid ISO timestamp"}), 400
@@ -748,8 +735,7 @@ def list_interactions():
 
 @app.route("/api/interactions/rules", methods=["GET"])
 def interaction_rules():
-    """Expose the rule table so the frontend can render filter chips/icons
-    without hard-coding it."""
+    """Expose the rule table so the frontend renders filter chips without hard-coding."""
     return jsonify(
         [
             {"type_a": a, "type_b": b, "distance_m": d, "min_duration_s": t, "kind": k}
@@ -759,8 +745,7 @@ def interaction_rules():
 
 
 if __name__ == "__main__":
-    # Local dev only. In production, gunicorn imports `app` directly
-    # (see Procfile) and this block doesn't run.
+    # Dev only — in production gunicorn imports `app` directly (see Procfile).
     port = int(os.getenv("PORT", "5000"))
     debug = os.getenv("FLASK_DEBUG", "1") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)

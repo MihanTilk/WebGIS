@@ -2,20 +2,16 @@
 -- Safe to re-run.
 
 CREATE TABLE IF NOT EXISTS asset_history (
-    id          SERIAL PRIMARY KEY,
-    asset_id    INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    id SERIAL PRIMARY KEY,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     recorded_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    geom        GEOMETRY(Point, 4326) NOT NULL
+    geom GEOMETRY(Point, 4326) NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_history_asset_time
-    ON asset_history (asset_id, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS idx_history_geom
-    ON asset_history USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_history_asset_time ON asset_history (asset_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_geom ON asset_history USING GIST (geom);
 
--- Trigger function: log every INSERT and every geom change to history.
--- Firing on INSERT means freshly created assets immediately have an origin
--- row in history (no need for a separate backfill on each new seed).
+-- Log every INSERT and every geom change to history (gives new assets an origin row immediately).
 CREATE OR REPLACE FUNCTION log_asset_position() RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'INSERT'

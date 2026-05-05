@@ -1,0 +1,76 @@
+name: Cleanup history
+
+# Trims the asset_history and interactions tables on a rolling window so
+# the Supabase free-tier database (500 MB) never fills up, even when the
+# simulator is pumping ~150 PUTs every few seconds against the deployed
+# Flask backend.
+#
+# Keeps the most recent 2 hours of data, which is enough for trails,
+# playback, heatmap, motion, and recent interaction events to keep working.
+
+on:
+  schedule:
+    - cron: "0 * * * *"      # every hour, on the hour (UTC)
+  workflow_dispatch:           # also allows manual run from the Actions tab
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install psql
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Show row counts before cleanup
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$DB_URL" -c "
+            SELECT 'asset_history' AS tbl, COUNT(*) AS rows FROM asset_history
+            UNION ALL
+            SELECT 'interactions',  COUNT(*) FROM interactions
+            UNION ALL
+            SELECT 'assets',        COUNT(*) FROM assets;
+          "
+
+      - name: Trim history older than 2 hours
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$DB_URL" -c "
+            DELETE FROM asset_history
+            WHERE recorded_at < NOW() - INTERVAL '2 hours';
+          "
+
+      - name: Trim interactions ended more than 2 hours ago
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$DB_URL" -c "
+            DELETE FROM interactions
+            WHERE ended_at IS NOT NULL
+              AND ended_at < NOW() - INTERVAL '2 hours';
+          "
+
+      - name: Show row counts after cleanup
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$DB_URL" -c "
+            SELECT 'asset_history' AS tbl, COUNT(*) AS rows FROM asset_history
+            UNION ALL
+            SELECT 'interactions',  COUNT(*) FROM interactions
+            UNION ALL
+            SELECT 'assets',        COUNT(*) FROM assets;
+          "
+
+      - name: Reclaim disk space (VACUUM)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          # VACUUM cannot run inside a transaction; -c uses one autocommit txn,
+          # so VACUUM works fine here.
+          psql "$DB_URL" -c "VACUUM (ANALYZE) asset_history;"
+          psql "$DB_URL" -c "VACUUM (ANALYZE) interactions;"

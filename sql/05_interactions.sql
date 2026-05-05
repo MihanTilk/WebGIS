@@ -1,7 +1,4 @@
--- Typed proximity encounters between pairs of assets. Each asset_type pair
--- maps to a different event kind (PICKUP / LOADING / OPERATING / MEETING /
--- CONVOY) instead of a generic "near each other" event.
--- Safe to re-run.
+-- Typed proximity encounters: each asset_type pair maps to a kind (PICKUP/LOADING/OPERATING/MEETING/CONVOY). Safe to re-run.
 
 CREATE TABLE IF NOT EXISTS interactions (
     id SERIAL PRIMARY KEY,

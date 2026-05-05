@@ -1,18 +1,7 @@
--- Two-tier island-wide seed: ~150 assets total.
---   * 120 clustered: ~6 per city × 20 cities, ±300 m jitter (≈60% person)
---   * 30 roaming:    free-scattered across the Sri Lanka bbox (≈55% vehicle)
--- The verification query at the end groups by the city tag in the name —
--- the roaming tier shows up as a "Roaming" row.
---
--- Safe to re-run (it appends). To start from a clean island demo:
---
---   TRUNCATE asset_history;
---   TRUNCATE assets RESTART IDENTITY CASCADE;
---   \i sql/04_clustered_seed.sql
+-- Island-wide seed: 120 clustered (6 × 20 cities) + 30 roaming. Safe to re-run.
+-- To reset: TRUNCATE asset_history; TRUNCATE assets RESTART IDENTITY CASCADE; \i sql/04_clustered_seed.sql
 
--- Hand-built Sri Lanka mainland polygon (~38 vertices, clockwise from
--- Point Pedro). Used by both the clustered and roaming tiers below to
--- guarantee no asset lands in the ocean.
+-- Sri Lanka mainland polygon used by both tiers to keep assets on land.
 WITH sri_lanka(geom) AS (
     SELECT ST_GeomFromText(
         'POLYGON((
@@ -50,8 +39,7 @@ cities(city, lon, lat) AS (VALUES
     ('Jaffna', 80.025, 9.661),
     ('Kegalle', 80.346, 7.251)
 ),
--- 12 candidates per city; first 6 that pass the land-polygon test win.
--- Coastal cities may lose a few candidates to the sea.
+-- 12 candidates per city; first 6 on land win. Coastal cities may lose a few.
 plan AS (
     SELECT
         c.city, c.lon, c.lat, gs AS seq,
@@ -95,13 +83,9 @@ SELECT
     ST_SetSRID(ST_MakePoint(jit_lon, jit_lat), 4326) AS geom
 FROM named;
 
--- Roaming tier: ~30 assets scattered freely on Sri Lanka land (in-transit /
--- off-grid). Biased toward vehicles since road traffic between cities is
--- mostly vehicular. Over-generate ~200 random bbox candidates, clip against
--- the mainland polygon with ST_Contains, take the first 30 that fall on land.
+-- Roaming tier: 30 vehicle-heavy assets, scattered via 200 ST_Contains-clipped bbox candidates.
 WITH sri_lanka(geom) AS (
-    -- Same detailed polygon as the clustered tier above. Duplicated rather
-    -- than shared because the two INSERT statements are independent.
+    -- Same polygon as above; duplicated because the two INSERTs are independent.
     SELECT ST_GeomFromText(
         'POLYGON((
             80.21 9.83, 80.50 9.65, 80.80 9.45, 81.10 9.05, 81.20 8.85,
@@ -157,12 +141,8 @@ SELECT
     ST_SetSRID(ST_MakePoint(lon, lat), 4326) AS geom
 FROM roam_named;
 
--- Synthetic past-walk: give each just-inserted asset ~30 historical
--- positions across the last ~45 minutes, so trail visualization works
--- immediately (without waiting for the simulator to accumulate history).
--- Random walk with ~60 m steps, anchored to current position and walked
--- backward in time. The AFTER-INSERT trigger already added the step=0
--- "now" row, so we skip step=0 here.
+-- Backfill ~30 history rows per asset (45 min back, ~60 m steps) so trails work right away.
+-- The INSERT trigger added step=0; we skip it here.
 WITH RECURSIVE
 recent_assets AS (
     SELECT id, geom FROM assets
@@ -189,18 +169,7 @@ SELECT
 FROM walk
 WHERE step > 0;
 
--- ---------------------------------------------------------------------------
--- Synthetic past interactions for the side-panel demo. Without this, the
--- panel is empty until the random-walk simulator happens to bring two
--- assets close enough for long enough — which can take many minutes given
--- the rule thresholds. We pre-populate the table with 25 plausible past
--- encounters drawn from existing in-cluster pairs.
---
--- Spread the start times across the last hour, durations from 30 s to a few
--- minutes, and leave 5 of them open (ended_at IS NULL) so the live indicator
--- in the side panel has something to show. Only insert into `interactions`
--- if the table is reachable (skip silently if 05_interactions.sql wasn't run).
--- ---------------------------------------------------------------------------
+-- Backfill 25 past interactions (5 still active) so the side panel isn't empty. Skipped if interactions table missing.
 DO $$
 BEGIN
     IF to_regclass('public.interactions') IS NULL THEN

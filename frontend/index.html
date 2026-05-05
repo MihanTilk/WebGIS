@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Deployed API. For local dev, override with ?api_root=http://localhost:5000/api
-       in the URL, or temporarily change the content below. (deploy: prod) -->
+  <!-- Deployed API. Local dev: append ?api_root=http://localhost:5000/api to the URL. -->
   <meta name="api-root" content="https://asset-tracking-api.onrender.com/api">
   <title>WebGIS Asset Tracking</title>
   <link rel="stylesheet" href="https://unpkg.com/ol@7.5.2/ol.css">
@@ -102,9 +101,7 @@
       white-space: pre-line;
     }
 
-    /* Compass control — rotates with the map view; click to reset to north.
-       Default corner is bottom-right on desktop; on mobile we move it to the
-       free top-left because the interactions panel claims the bottom edge. */
+    /* Compass — bottom-right on desktop, top-left on mobile (interactions panel takes the bottom). */
     .compass-control {
       position: absolute;
       bottom: 14px;
@@ -123,8 +120,7 @@
     .compass-control svg { display: block; transition: transform 0.1s linear; }
     .compass-control:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
 
-    /* Collapse button on the controls panel — only visible on small screens.
-       On desktop it stays hidden so layout is unchanged. */
+    /* Mobile-only collapse button on the controls panel. */
     #controls-toggle {
       display: none;
       background: none;
@@ -184,14 +180,10 @@
       #interactions-panel.collapsed { max-height: none; }
       .kind-chip { font-size: 10px; padding: 2px 6px; }
 
-      /* Legend lives in the popup info already — hide the corner widget so
-         it doesn't fight the interactions panel for the bottom-left. */
+      /* Legend duplicates info shown in popups — hide on mobile. */
       .legend { display: none; }
 
-      /* Move compass below the OL zoom buttons (which sit at top-left at
-         roughly 0..70 px) so the compass doesn't overlap the zoom-in
-         button. The bottom edge of the screen is taken by the interactions
-         panel, so we keep the compass on the left column instead. */
+      /* Compass below the OL zoom buttons (which sit at top-left ~0..70 px). */
       .compass-control {
         top: 78px; left: 8px;
         bottom: auto; right: auto;
@@ -311,8 +303,7 @@
   <script src="https://unpkg.com/ol@7.5.2/dist/ol.js"
           onerror="document.getElementById('status').textContent='Failed to load OpenLayers from CDN'"></script>
   <script>
-    // For deployment: change the meta[name="api-root"] tag in <head>, or
-    // pass the URL via an api_root query string. Defaults to localhost dev.
+    // Override via meta[name="api-root"] or ?api_root= in the URL.
     const API_ROOT = (
       new URLSearchParams(location.search).get('api_root')
       || document.querySelector('meta[name="api-root"]')?.content
@@ -328,8 +319,7 @@
     let matchedAssetIds = new Set();
     let proximityActive = false;
     let lastProximityClick = null;
-    // Set of asset IDs explicitly highlighted (e.g. the two parties of a
-    // clicked interaction event). Overrides the proximity styling.
+    // Asset IDs explicitly highlighted (e.g. parties of a clicked interaction). Overrides proximity styling.
     let highlightedAssetIds = new Set();
 
     function styleFor(feature) {
@@ -390,21 +380,14 @@
       }
     });
 
-    // Density heatmap of historical positions. Recency-decay weight comes
-    // from the backend; OpenLayers' Heatmap does the kernel density.
-    // The per-point weight multiplier and kernel radius both scale with
-    // zoom (see updateHeatmapStyle): at low zoom we keep weights small so
-    // density EMERGES from overlap, but at high zoom we boost weights and
-    // radius so individual / sparse points still read clearly instead of
-    // fading into the basemap.
+    // Density heatmap. Backend supplies recency-weighted points; updateHeatmapStyle scales kernel and weight with zoom.
     let heatmapWeightMultiplier = 0.10;
     const heatmapSource = new ol.source.Vector();
     const heatmapLayer  = new ol.layer.Heatmap({
       source: heatmapSource,
       blur: 22,
       radius: 6,
-      // Smooth gradient with a transparent low end so empty areas stay
-      // clear instead of glowing red around isolated points.
+      // Transparent low end so empty areas stay clear instead of glowing around isolated points.
       gradient: [
         'rgba(0,0,255,0)',     // 0.0 transparent
         'rgba(0,0,255,0.45)',  // 0.2 blue
@@ -417,8 +400,7 @@
       visible: false,
     });
 
-    // Direction arrow for the most recently clicked asset. SVG data URL gives
-    // us a real arrow (head + shaft) instead of a generic triangle / star.
+    // Direction arrow for the most recently clicked asset (SVG data URL = real arrow shape).
     function arrowDataUrl(fillColor) {
       const svg =
         `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 32 40">`
@@ -460,8 +442,7 @@
       MEETING:   '#42A5F5',
       CONVOY:    '#AB47BC',
     };
-    // Per-kind metadata — populated at startup from /api/interactions/rules
-    // so the info-icon tooltip text matches what the backend actually enforces.
+    // Per-kind metadata loaded from /api/interactions/rules so tooltips match the backend.
     const kindMeta = {};   // { PICKUP: { type_a, type_b, distance_m, min_duration_s }, ... }
     function ruleTooltip(kind) {
       const m = kindMeta[kind];
@@ -488,10 +469,7 @@
       }
     });
 
-    // Encounter pinpoint: a circular border drawn at the meeting midpoint
-    // when the user clicks an event in the side panel. Radius = the rule's
-    // proximity threshold, so the circle visually shows "this is the area
-    // they were both inside when the event fired".
+    // Encounter pinpoint: circle at the event midpoint with radius = the rule's proximity threshold.
     const encounterSource = new ol.source.Vector();
     const encounterLayer  = new ol.layer.Vector({
       source: encounterSource,
@@ -650,9 +628,7 @@
     }
     updateRadiusLabel();
 
-    // Build a polygon approximation of a circle on the WGS84 spheroid,
-    // then transform to Web Mercator for display. Avoids the latitude
-    // distortion you get from ol.geom.Circle in EPSG:3857.
+    // Polygon-approx circle on WGS84 then projected to 3857 — avoids ol.geom.Circle's latitude distortion.
     function geographicCirclePolygon(centerLon, centerLat, radiusM, sides = 96) {
       const coords = [];
       const dLat = radiusM / 111320;
@@ -788,16 +764,13 @@
     const filterEl = document.getElementById('filter');
     const statusEl = document.getElementById('status');
 
-    // Initial-load behaviour: on the first successful refresh, snap the view
-    // to the densest cluster of assets so the user lands on something useful
-    // instead of the hard-coded Colombo centre. Only fires once per page load.
+    // On first successful refresh, snap the view to the densest cluster (once per page load).
     let initialFitDone = false;
 
     function fitToDensest() {
       const features = vectorSource.getFeatures();
       if (!features.length) return;
-      // Grid-bin in WGS84; ~0.05° ≈ 5 km cells. Whichever cell holds the most
-      // points is "the place with the most points" for our purposes.
+      // Grid-bin in WGS84 (~0.05° ≈ 5 km cells); fullest cell wins.
       const cellSize = 0.05;
       const bins = new Map();
       for (const f of features) {
@@ -897,7 +870,7 @@
       const ticket = (snapshotInflight = Symbol('snap'));
       try {
         const data = await fetchSnapshot(t);
-        if (ticket !== snapshotInflight) return;
+        if (ticket !== snapshotInflight || mode !== 'playback') return;
         const features = new ol.format.GeoJSON().readFeatures(data, {
           featureProjection: 'EPSG:3857'
         });
@@ -906,7 +879,7 @@
         statusEl.textContent =
           `${features.length} asset${features.length === 1 ? '' : 's'} @ playback`;
       } catch (err) {
-        if (ticket !== snapshotInflight) return;
+        if (ticket !== snapshotInflight || mode !== 'playback') return;
         console.error('snapshot failed', err);
         statusEl.textContent = 'API error: ' + err.message;
       }
@@ -994,8 +967,7 @@
     });
 
     filterEl.addEventListener('change', () => {
-      // Filter scope changed: any clicked-asset / clicked-interaction state
-      // may now point at assets no longer shown. Clear all selection visuals.
+      // Filter scope changed — clear any selection that may now reference hidden assets.
       popupEl.style.display = 'none';
       trailSource.clear();
       directionSource.clear();
@@ -1021,15 +993,19 @@
     const heatmapHoursEl = document.getElementById('heatmap-hours');
     const heatmapStatusEl = document.getElementById('heatmap-status');
 
-    // Zoom-aware kernel — tight at low zoom so clusters don't smear into
-    // one blob, looser at high zoom so points blend.
+    // Zoom-aware kernel + per-point weight: tight at low zoom (avoid one big blob), looser at high zoom (keep sparse points readable).
     function updateHeatmapStyle() {
       if (!heatmapLayer.getVisible()) return;
       const z = map.getView().getZoom() || 8;
-      const radius = Math.max(3, Math.min(18, Math.round((z - 5) * 1.6)));
-      const blur   = Math.max(10, Math.min(34, Math.round(radius * 2.0)));
+      // z=8 → ~5 px,  z=14 → ~22 px,  z=18+ → 36 px (capped)
+      const radius = Math.max(4, Math.min(36, Math.round((z - 5) * 2.6)));
+      const blur   = Math.max(10, Math.min(48, Math.round(radius * 1.7)));
+      // z=8 → 0.10 (overlap-driven), z=14 → ~0.55, z=18+ → 0.90 (capped).
+      heatmapWeightMultiplier =
+        Math.max(0.10, Math.min(0.90, 0.10 + (z - 8) * 0.075));
       heatmapLayer.setRadius(radius);
       heatmapLayer.setBlur(blur);
+      heatmapLayer.changed();   // force re-render so new weights apply
     }
     let heatmapZoomTimer = null;
     map.getView().on('change:resolution', () => {
@@ -1037,6 +1013,7 @@
       heatmapZoomTimer = setTimeout(updateHeatmapStyle, 80);
     });
 
+    let heatmapInflight = null;
     async function refreshHeatmap() {
       if (!heatmapToggle.checked) {
         heatmapLayer.setVisible(false);
@@ -1044,11 +1021,15 @@
         heatmapStatusEl.textContent = '';
         return;
       }
+      // Same de-dupe pattern as renderSnapshot — bail if a newer fetch
+      // started before this one finished.
+      const ticket = (heatmapInflight = Symbol('heat'));
       const params = new URLSearchParams({ hours: heatmapHoursEl.value });
       if (filterEl.value) params.set('type', filterEl.value);
       try {
         const res = await fetch(`${API_ROOT}/heatmap?${params}`, { cache: 'no-store' });
         const data = await res.json();
+        if (ticket !== heatmapInflight || !heatmapToggle.checked) return;
         const features = new ol.format.GeoJSON().readFeatures(data, {
           featureProjection: 'EPSG:3857'
         });
@@ -1060,6 +1041,7 @@
         const t = data.metadata?.type || 'all';
         heatmapStatusEl.textContent = `${n} positions · ${t} · last ${heatmapHoursEl.value}h`;
       } catch (err) {
+        if (ticket !== heatmapInflight) return;
         console.error('heatmap fetch failed', err);
         heatmapStatusEl.textContent = 'heatmap error: ' + err.message;
       }
@@ -1079,8 +1061,7 @@
     const enabledKinds = new Set(Object.keys(KIND_COLORS));   // all on by default
     let panelCollapsed = false;
 
-    // Shared popover that surfaces a rule's full definition when the user
-    // clicks the ⓘ on any filter chip. Click again on the same icon to hide.
+    // Shared popover for the ⓘ on filter chips — click the same icon again to hide.
     const chipPopover = document.getElementById('chip-info-popover');
     let chipPopoverActiveKind = null;
 
@@ -1162,8 +1143,7 @@
         ixFilters.querySelectorAll('[data-role="info"]').forEach(el => {
           el.title = ruleTooltip(el.parentElement.dataset.kind);
         });
-        // Force a re-render of the side panel so list items pick up the new
-        // metadata in their collapsible info sections.
+        // Re-render the side panel so list items pick up the new metadata.
         renderInteractions(latestInteractions);
       } catch (e) {
         console.error('rules fetch failed', e);
@@ -1302,9 +1282,7 @@
           highlightedAssetIds = new Set([p.asset_a_id, p.asset_b_id]);
           vectorLayer.changed();
 
-          // (b) Pinpoint the meeting location with a circular border.
-          //     Radius = the rule's proximity threshold; falls back to 100 m
-          //     if rules haven't loaded yet.
+          // (b) Pinpoint the meeting location — radius = rule's proximity threshold (fallback 100 m).
           encounterSource.clear();
           const ruleRadius = (kindMeta[p.kind]?.distance_m) || 100;
           const [mlon, mlat] = f.geometry.coordinates;
@@ -1349,9 +1327,7 @@
     setInterval(refreshInteractions, 5000);
 
     // ---------- Compass ----------
-    // Pinch-rotate (touch) and Shift-Alt-drag (desktop) rotate the map view;
-    // the compass SVG counter-rotates to keep "N" pointing at world-north,
-    // and clicking it animates the view back to rotation = 0.
+    // SVG counter-rotates with the map view; click animates back to rotation = 0.
     const compassEl = document.getElementById('compass');
     const compassSvg = compassEl.querySelector('svg');
     function updateCompass() {
@@ -1378,9 +1354,7 @@
     });
 
     function applyResponsiveDefaults(isMobile) {
-      // Start collapsed on small screens; leave the user's choice alone on
-      // bigger ones. Re-applied on viewport resize so rotating the phone
-      // or resizing the window does the right thing.
+      // Collapse on small screens; reapplied on resize so phone rotation works.
       if (isMobile) {
         setControlsMinimised(true);
         if (!panelCollapsed) ixHeader.click();   // collapse interactions panel
