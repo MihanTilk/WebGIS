@@ -87,6 +87,13 @@ def row_to_feature(row):
     }
 
 
+@app.route("/api/health", methods=["GET"])
+def health():
+    """Liveness probe — DB-independent so it passes during a fresh deploy
+    before the schema has been loaded. Render points its health check here."""
+    return jsonify({"ok": True})
+
+
 @app.route("/api/assets", methods=["GET"])
 def list_assets():
     type_filter = request.args.get("type")
