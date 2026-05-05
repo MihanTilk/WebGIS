@@ -14,6 +14,7 @@ Built for the *Building a WebGIS Asset Tracking Application* assignment (Index 2
 - **Density heatmap** — toggle a kernel-density heatmap of historical positions over a configurable window (1h / 6h / 24h / 3d), with recency-weighted intensity.
 - **Time-travel playback** — switch from Live to Playback mode and scrub a slider, or hit Play to watch the whole fleet move through history at 1×/5×/30× speed.
 - **Proximity search** — toggle proximity mode, click anywhere on the map to draw a search circle, all assets inside are highlighted (uses PostGIS `ST_DWithin` on the geography type for true-metre radius).
+- **Asset interaction events** — pairs of assets are joined spatially-and-by-type to detect typed encounters. Five rules: `PICKUP` (vehicle ↔ person), `LOADING` (vehicle ↔ equipment), `OPERATING` (person ↔ equipment), `MEETING` (person ↔ person), `CONVOY` (vehicle ↔ vehicle). The realistic real-world thresholds are 5–20 m and 10–60 s, but the demo loosens these to 80–300 m and 4–6 s so events are visible during a short random-walk demo (the real values are documented in the source). Detection runs in PostGIS each simulator tick; a side panel feeds the events with click-to-zoom-and-highlight, an "ⓘ" rule popover on each chip, an info-toggle on each event, and a circular border at the meeting location showing the rule's proximity threshold. Stars on the map mark each event midpoint, color-coded by kind.
 - **Fit-to-all** button — auto-zoom the view to all visible assets.
 
 ## Architecture
@@ -32,7 +33,7 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 ```
 .
 ├── backend/
-│   ├── app.py             # Flask REST API (11 endpoints)
+│   ├── app.py             # Flask REST API (14 endpoints)
 │   ├── simulator.py       # Periodic location updater + auto-spawn
 │   ├── seed_assets.py     # One-shot bulk loader (POSTs N assets)
 │   ├── smoke_test.ps1     # PowerShell smoke test for every endpoint
@@ -44,7 +45,8 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 │   ├── 01_schema.sql            # CREATE TABLE assets + GIST index
 │   ├── 02_sample_data.sql       # 6 seed assets around Colombo
 │   ├── 03_history.sql           # asset_history + INSERT/UPDATE trigger
-│   └── 04_clustered_seed.sql    # 120 clustered assets across 20 SL cities
+│   ├── 04_clustered_seed.sql    # 120 clustered assets across 20 SL cities
+│   └── 05_interactions.sql      # interactions table + view for typed encounters
 └── docs/
     └── screenshots/
 ```
@@ -60,6 +62,7 @@ psql -U postgres -p 5433 -c "CREATE DATABASE asset_tracking;"
 psql -U postgres -p 5433 -d asset_tracking -f sql\01_schema.sql
 psql -U postgres -p 5433 -d asset_tracking -f sql\02_sample_data.sql
 psql -U postgres -p 5433 -d asset_tracking -f sql\03_history.sql
+psql -U postgres -p 5433 -d asset_tracking -f sql\05_interactions.sql
 ```
 
 For an island-wide demo (120 assets across 20 cities, with synthetic past trails):
@@ -120,12 +123,16 @@ python seed_assets.py 40 --island                                            # b
 | GET    | `/api/assets/<id>`                  | Single asset as a GeoJSON Feature.                                           |
 | POST   | `/api/assets`                       | Create a new asset. Body: `{name, asset_type, latitude, longitude}`.         |
 | PUT    | `/api/assets/<id>`                  | Update asset location. Body: `{latitude, longitude}`.                        |
+| DELETE | `/api/assets/<id>`                  | Delete an asset. Cascades to its history rows and interactions.              |
 | GET    | `/api/assets/<id>/history`          | Last `?hours=N` of positions for one asset as a GeoJSON LineString trail.    |
 | GET    | `/api/assets/<id>/motion`           | Speed (km/h, m/s) and heading (deg) from the last two history rows.          |
 | GET    | `/api/history/range`                | Earliest and latest `recorded_at` across the whole history table (playback). |
 | GET    | `/api/snapshot?at=<iso>`            | Each asset's last known position at or before `<iso>` timestamp (playback).  |
 | GET    | `/api/heatmap?hours=N`              | Density heatmap input — point features with recency-decay weights.           |
 | GET    | `/api/proximity?lon&lat&radius_m`   | All assets within `radius_m` metres of (lon, lat). Spheroid-accurate.        |
+| GET    | `/api/interactions?kind&since&limit` | Recent typed encounters as a GeoJSON FeatureCollection of stars at midpoints.|
+| POST   | `/api/interactions/detect`          | Run one detection sweep (open new, close stale). Idempotent.                 |
+| GET    | `/api/interactions/rules`           | The 5 rule definitions (type pairs, distance, min duration, kind).           |
 
 Run `backend\smoke_test.ps1` to exercise every endpoint.
 

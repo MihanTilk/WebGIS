@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- For deployed builds, change content to e.g.
+       https://asset-tracking-api.onrender.com/api -->
+  <meta name="api-root" content="http://localhost:5000/api">
   <title>WebGIS Asset Tracking</title>
   <link rel="stylesheet" href="https://unpkg.com/ol@7.5.2/ol.css">
   <style>
@@ -45,6 +48,59 @@
     .legend .dot { width: 12px; height: 12px; border-radius: 50%;
                    margin-right: 8px; border: 2px solid #fff;
                    box-shadow: 0 0 0 1px #888; }
+
+    #interactions-panel {
+      position: absolute; top: 12px; left: 12px; z-index: 10;
+      background: #fff; border-radius: 8px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+      width: 300px; max-height: 55vh;
+      display: flex; flex-direction: column; overflow: hidden;
+      font-size: 13px;
+    }
+    #interactions-header {
+      padding: 8px 12px; border-bottom: 1px solid #eee;
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer; user-select: none;
+    }
+    #interactions-header strong { font-size: 14px; }
+    #interactions-count { color: #666; font-size: 12px; }
+    #interactions-filters {
+      padding: 6px 10px; border-bottom: 1px solid #eee;
+      display: flex; flex-wrap: wrap; gap: 4px;
+    }
+    .kind-chip {
+      padding: 2px 8px; border-radius: 12px; font-size: 11px;
+      cursor: pointer; user-select: none; border: 1px solid transparent;
+    }
+    .kind-chip.off { opacity: 0.35; }
+    #interactions-list {
+      list-style: none; margin: 0; padding: 0;
+      overflow-y: auto; flex: 1;
+    }
+    #interactions-list li {
+      padding: 8px 12px; border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+    }
+    #interactions-list li:hover { background: #fafafa; }
+    .ix-row { display: flex; justify-content: space-between; gap: 6px; }
+    .ix-kind { font-weight: bold; font-size: 11px; padding: 1px 6px;
+               border-radius: 8px; color: #fff; }
+    .ix-meta { color: #888; font-size: 11px; margin-top: 2px; }
+    .ix-empty { padding: 14px; color: #888; text-align: center; }
+    .ix-active::after { content: "●"; color: #2e7d32; margin-left: 4px; }
+    #interactions-collapsed { display: none; }
+
+    #chip-info-popover {
+      display: none;
+      margin: 4px 10px 6px;
+      padding: 8px 10px;
+      background: #f7f7f9;
+      border-left: 3px solid #888;
+      border-radius: 3px;
+      font-size: 11px;
+      color: #333;
+      white-space: pre-line;
+    }
   </style>
 </head>
 <body>
@@ -114,10 +170,28 @@
     <div id="popup-content"></div>
   </div>
 
+  <div id="interactions-panel">
+    <div id="interactions-header">
+      <strong>Interactions</strong>
+      <span id="interactions-count">—</span>
+    </div>
+    <div id="interactions-filters"></div>
+    <div id="chip-info-popover"></div>
+    <ul id="interactions-list">
+      <li class="ix-empty">No interactions yet.</li>
+    </ul>
+  </div>
+
   <script src="https://unpkg.com/ol@7.5.2/dist/ol.js"
           onerror="document.getElementById('status').textContent='Failed to load OpenLayers from CDN'"></script>
   <script>
-    const API_ROOT = "http://localhost:5000/api";
+    // For deployment: change the meta[name="api-root"] tag in <head>, or
+    // pass the URL via an api_root query string. Defaults to localhost dev.
+    const API_ROOT = (
+      new URLSearchParams(location.search).get('api_root')
+      || document.querySelector('meta[name="api-root"]')?.content
+      || "http://localhost:5000/api"
+    ).replace(/\/$/, '');
     const API_BASE = `${API_ROOT}/assets`;
     const REFRESH_MS = 5000;
     const PLAYBACK_TICK_MS = 1000;  // wall-clock cadence while playing
@@ -128,10 +202,24 @@
     let matchedAssetIds = new Set();
     let proximityActive = false;
     let lastProximityClick = null;
+    // Set of asset IDs explicitly highlighted (e.g. the two parties of a
+    // clicked interaction event). Overrides the proximity styling.
+    let highlightedAssetIds = new Set();
 
     function styleFor(feature) {
       const color = COLORS[feature.get('asset_type')] || '#555';
       const id = feature.get('id');
+
+      // Explicit highlight wins over everything else.
+      if (highlightedAssetIds.has(id)) {
+        return new ol.style.Style({
+          image: new ol.style.Circle({
+            radius: 13,
+            fill: new ol.style.Fill({ color }),
+            stroke: new ol.style.Stroke({ color: '#FFD700', width: 5 })
+          })
+        });
+      }
 
       if (proximityActive && lastProximityClick !== null) {
         if (matchedAssetIds.has(id)) {
@@ -222,6 +310,58 @@
       setTimeout(() => directionLayer.changed(), 50);
     });
 
+    // Interaction events — star icons at the encounter midpoint, color by kind.
+    const KIND_COLORS = {
+      PICKUP:    '#FF7043',
+      LOADING:   '#FFA726',
+      OPERATING: '#66BB6A',
+      MEETING:   '#42A5F5',
+      CONVOY:    '#AB47BC',
+    };
+    // Per-kind metadata — populated at startup from /api/interactions/rules
+    // so the info-icon tooltip text matches what the backend actually enforces.
+    const kindMeta = {};   // { PICKUP: { type_a, type_b, distance_m, min_duration_s }, ... }
+    function ruleTooltip(kind) {
+      const m = kindMeta[kind];
+      if (!m) return kind;
+      return `${kind}\n${m.type_a} ↔ ${m.type_b}\n`
+           + `within ${m.distance_m} m for ≥ ${m.min_duration_s}s`;
+    }
+    const interactionSource = new ol.source.Vector();
+    const interactionLayer  = new ol.layer.Vector({
+      source: interactionSource,
+      style: f => {
+        const color = KIND_COLORS[f.get('kind')] || '#999';
+        const active = f.get('active');
+        return new ol.style.Style({
+          image: new ol.style.RegularShape({
+            points: 5,
+            radius: active ? 11 : 8,
+            radius2: active ? 5 : 3.5,
+            angle: 0,
+            fill: new ol.style.Fill({ color }),
+            stroke: new ol.style.Stroke({ color: '#fff', width: 1.5 })
+          })
+        });
+      }
+    });
+
+    // Encounter pinpoint: a circular border drawn at the meeting midpoint
+    // when the user clicks an event in the side panel. Radius = the rule's
+    // proximity threshold, so the circle visually shows "this is the area
+    // they were both inside when the event fired".
+    const encounterSource = new ol.source.Vector();
+    const encounterLayer  = new ol.layer.Vector({
+      source: encounterSource,
+      style: f => new ol.style.Style({
+        stroke: new ol.style.Stroke({
+          color: KIND_COLORS[f.get('kind')] || '#FFD700',
+          width: 3,
+        }),
+        fill: new ol.style.Fill({ color: 'rgba(255,215,0,0.10)' })
+      })
+    });
+
     // Proximity search circle (drawn under markers so it doesn't block clicks).
     const proximitySource = new ol.source.Vector();
     const proximityLayer  = new ol.layer.Vector({
@@ -236,11 +376,13 @@
       target: 'map',
       layers: [
         new ol.layer.Tile({ source: new ol.source.OSM() }),
-        heatmapLayer,    // above tiles
-        proximityLayer,  // above heatmap
+        heatmapLayer,      // above tiles
+        proximityLayer,    // above heatmap
+        encounterLayer,    // selected-event circle (under markers)
         trailLayer,
-        directionLayer,  // arrow above trail, below markers
-        vectorLayer      // markers stay on top so clicks always hit them
+        directionLayer,    // arrow above trail
+        interactionLayer,  // event stars between trail and markers
+        vectorLayer        // markers stay on top so clicks always hit them
       ],
       view: new ol.View({
         center: ol.proj.fromLonLat([79.88, 6.90]),
@@ -492,6 +634,11 @@
         popupEl.style.display = 'none';
         trailSource.clear();
         directionSource.clear();
+        encounterSource.clear();
+        if (highlightedAssetIds.size) {
+          highlightedAssetIds = new Set();
+          vectorLayer.changed();
+        }
       }
     });
 
@@ -620,6 +767,11 @@
       if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
       trailSource.clear();
       directionSource.clear();
+      encounterSource.clear();
+      if (highlightedAssetIds.size) {
+        highlightedAssetIds = new Set();
+        vectorLayer.changed();
+      }
       popupEl.style.display = 'none';
       playbackEl.style.display = 'block';
       try {
@@ -666,11 +818,16 @@
     });
 
     filterEl.addEventListener('change', () => {
-      // Filter scope changed: a clicked-asset's arrow / trail / popup may
-      // belong to an asset no longer shown. Clear them.
+      // Filter scope changed: any clicked-asset / clicked-interaction state
+      // may now point at assets no longer shown. Clear all selection visuals.
       popupEl.style.display = 'none';
       trailSource.clear();
       directionSource.clear();
+      encounterSource.clear();
+      if (highlightedAssetIds.size) {
+        highlightedAssetIds = new Set();
+        vectorLayer.changed();
+      }
       if (mode === 'live') refresh();
       else renderSnapshot();
       refreshHeatmap();
@@ -718,6 +875,285 @@
     heatmapToggle.addEventListener('change', refreshHeatmap);
     heatmapHoursEl.addEventListener('change', refreshHeatmap);
     setInterval(() => { if (heatmapToggle.checked) refreshHeatmap(); }, 30000);
+
+    // ---------- Interactions panel ----------
+    const ixPanel    = document.getElementById('interactions-panel');
+    const ixHeader   = document.getElementById('interactions-header');
+    const ixCount    = document.getElementById('interactions-count');
+    const ixFilters  = document.getElementById('interactions-filters');
+    const ixList     = document.getElementById('interactions-list');
+
+    const enabledKinds = new Set(Object.keys(KIND_COLORS));   // all on by default
+    let panelCollapsed = false;
+
+    // Shared popover that surfaces a rule's full definition when the user
+    // clicks the ⓘ on any filter chip. Click again on the same icon to hide.
+    const chipPopover = document.getElementById('chip-info-popover');
+    let chipPopoverActiveKind = null;
+
+    function showChipPopover(kind, anchorColor) {
+      if (chipPopoverActiveKind === kind) {
+        chipPopover.style.display = 'none';
+        chipPopoverActiveKind = null;
+        return;
+      }
+      const m = kindMeta[kind];
+      chipPopover.style.borderLeftColor = anchorColor;
+      chipPopover.textContent = m
+        ? `${kind}\nRule: ${m.type_a} ↔ ${m.type_b}\nProximity: within ${m.distance_m} m\nMinimum dwell: ≥ ${m.min_duration_s} s`
+        : `${kind}\n(rule metadata not loaded yet — refresh in a moment)`;
+      chipPopover.style.display = 'block';
+      chipPopoverActiveKind = kind;
+    }
+
+    // Click anywhere outside the chip popover or its source ⓘ icon dismisses it.
+    document.addEventListener('click', evt => {
+      if (chipPopoverActiveKind === null) return;
+      if (chipPopover.contains(evt.target)) return;
+      if (evt.target.dataset && evt.target.dataset.role === 'info'
+          && evt.target.parentElement && evt.target.parentElement.classList.contains('kind-chip')) {
+        return; // Let the chip's own handler decide what to do.
+      }
+      chipPopover.style.display = 'none';
+      chipPopoverActiveKind = null;
+    });
+
+    // Build filter chips.
+    Object.keys(KIND_COLORS).forEach(kind => {
+      const chip = document.createElement('span');
+      chip.className = 'kind-chip';
+      chip.dataset.kind = kind;
+      chip.style.background = KIND_COLORS[kind] + '20';
+      chip.style.borderColor = KIND_COLORS[kind];
+      chip.style.color = '#222';
+
+      const label = document.createElement('span');
+      label.textContent = kind;
+
+      const info = document.createElement('span');
+      info.textContent = ' ⓘ';
+      info.style.cursor = 'pointer';
+      info.style.color = '#1976d2';
+      info.style.fontWeight = 'bold';
+      info.title = 'Click for rule details';
+      info.dataset.role = 'info';
+
+      chip.append(label, info);
+      chip.title = `Click ${kind} to toggle filter`;
+
+      // Clicking the ⓘ shows the popover; clicking the rest of the chip toggles.
+      info.addEventListener('click', evt => {
+        evt.stopPropagation();
+        showChipPopover(kind, KIND_COLORS[kind]);
+      });
+      chip.addEventListener('click', evt => {
+        if (evt.target.dataset.role === 'info') return;
+        if (enabledKinds.has(kind)) {
+          enabledKinds.delete(kind);
+          chip.classList.add('off');
+        } else {
+          enabledKinds.add(kind);
+          chip.classList.remove('off');
+        }
+        renderInteractions(latestInteractions);
+      });
+      ixFilters.appendChild(chip);
+    });
+
+    async function loadInteractionRules() {
+      try {
+        const res = await fetch(`${API_ROOT}/interactions/rules`, { cache: 'no-store' });
+        const rules = await res.json();
+        rules.forEach(r => { kindMeta[r.kind] = r; });
+        // Refresh chip tooltips (the "ⓘ" hover text on filter chips).
+        ixFilters.querySelectorAll('[data-role="info"]').forEach(el => {
+          el.title = ruleTooltip(el.parentElement.dataset.kind);
+        });
+        // Force a re-render of the side panel so list items pick up the new
+        // metadata in their collapsible info sections.
+        renderInteractions(latestInteractions);
+      } catch (e) {
+        console.error('rules fetch failed', e);
+      }
+    }
+    loadInteractionRules();
+
+    ixHeader.addEventListener('click', () => {
+      panelCollapsed = !panelCollapsed;
+      ixFilters.style.display = panelCollapsed ? 'none' : '';
+      ixList.style.display    = panelCollapsed ? 'none' : '';
+    });
+
+    function fmtDuration(s) {
+      if (s < 60) return `${s}s`;
+      if (s < 3600) return `${Math.round(s / 60)}m`;
+      return `${(s / 3600).toFixed(1)}h`;
+    }
+
+    let latestInteractions = [];
+    function renderInteractions(features) {
+      const filtered = features.filter(f => enabledKinds.has(f.properties.kind));
+
+      // Star layer
+      interactionSource.clear();
+      const olFeatures = new ol.format.GeoJSON().readFeatures(
+        { type: 'FeatureCollection', features: filtered },
+        { featureProjection: 'EPSG:3857' }
+      );
+      interactionSource.addFeatures(olFeatures);
+
+      // Side panel
+      ixCount.textContent = `${filtered.length} shown · ${features.length} total`;
+      ixList.replaceChildren();
+      if (!filtered.length) {
+        const li = document.createElement('li');
+        li.className = 'ix-empty';
+        li.textContent = features.length === 0
+          ? 'No interactions yet.'
+          : 'No interactions match the active filters.';
+        ixList.appendChild(li);
+        return;
+      }
+
+      filtered.slice(0, 80).forEach(f => {
+        const p = f.properties;
+        const li = document.createElement('li');
+
+        const row1 = document.createElement('div');
+        row1.className = 'ix-row';
+        const left = document.createElement('div');
+
+        const tag = document.createElement('span');
+        tag.className = 'ix-kind';
+        if (p.active) tag.classList.add('ix-active');
+        tag.style.background = KIND_COLORS[p.kind];
+        tag.textContent = p.kind;
+        left.appendChild(tag);
+
+        const info = document.createElement('span');
+        info.textContent = ' ⓘ';
+        info.style.cursor = 'pointer';
+        info.style.color = '#1976d2';
+        info.style.marginLeft = '4px';
+        info.style.fontWeight = 'bold';
+        info.dataset.role = 'info';
+        info.dataset.kind = p.kind;
+        info.title = 'Click to show / hide details';
+        left.appendChild(info);
+
+        const right = document.createElement('span');
+        right.style.color = '#666';
+        right.style.fontSize = '11px';
+        right.textContent = fmtDuration(p.duration_s);
+        row1.append(left, right);
+
+        const row2 = document.createElement('div');
+        row2.style.marginTop = '4px';
+        row2.textContent = `${p.asset_a_name} ↔ ${p.asset_b_name}`;
+
+        const row3 = document.createElement('div');
+        row3.className = 'ix-meta';
+        const started = new Date(p.started_at).toLocaleTimeString();
+        row3.textContent = p.active
+          ? `since ${started}`
+          : `${started} → ${new Date(p.ended_at).toLocaleTimeString()}`;
+
+        // Collapsible metadata panel — click ⓘ to toggle.
+        const meta = document.createElement('div');
+        meta.className = 'ix-meta-detail';
+        meta.style.display = 'none';
+        meta.style.marginTop = '6px';
+        meta.style.padding = '6px 8px';
+        meta.style.background = '#f7f7f9';
+        meta.style.borderLeft = `3px solid ${KIND_COLORS[p.kind]}`;
+        meta.style.borderRadius = '3px';
+        meta.style.fontSize = '11px';
+        meta.style.color = '#333';
+        meta.style.whiteSpace = 'pre-line';
+
+        function buildMetaText() {
+          const m = kindMeta[p.kind];
+          const ruleLine = m
+            ? `Rule: ${m.type_a} ↔ ${m.type_b}, within ${m.distance_m} m for ≥ ${m.min_duration_s}s`
+            : `Rule: ${p.kind}`;
+          return [
+            ruleLine,
+            '',
+            `A: ${p.asset_a_name}  (${p.asset_a_type}, id ${p.asset_a_id})`,
+            `B: ${p.asset_b_name}  (${p.asset_b_type}, id ${p.asset_b_id})`,
+            '',
+            `started ${new Date(p.started_at).toLocaleString()}`,
+            p.ended_at
+              ? `ended   ${new Date(p.ended_at).toLocaleString()}`
+              : `(still active)`,
+            `at ${f.geometry.coordinates[1].toFixed(5)}, ${f.geometry.coordinates[0].toFixed(5)}`,
+          ].join('\n');
+        }
+        meta.textContent = buildMetaText();
+        meta.dataset.kind = p.kind;
+        meta.dataset.role = 'info-meta';
+
+        info.addEventListener('click', evt => {
+          evt.stopPropagation();
+          if (meta.style.display === 'none') {
+            meta.textContent = buildMetaText();   // refresh in case rules just loaded
+            meta.style.display = 'block';
+          } else {
+            meta.style.display = 'none';
+          }
+        });
+
+        li.append(row1, row2, row3, meta);
+        li.addEventListener('click', () => {
+          // (a) Highlight the two parties.
+          highlightedAssetIds = new Set([p.asset_a_id, p.asset_b_id]);
+          vectorLayer.changed();
+
+          // (b) Pinpoint the meeting location with a circular border.
+          //     Radius = the rule's proximity threshold; falls back to 100 m
+          //     if rules haven't loaded yet.
+          encounterSource.clear();
+          const ruleRadius = (kindMeta[p.kind]?.distance_m) || 100;
+          const [mlon, mlat] = f.geometry.coordinates;
+          encounterSource.addFeature(new ol.Feature({
+            geometry: geographicCirclePolygon(mlon, mlat, ruleRadius),
+            kind: p.kind,
+          }));
+
+          // (c) Zoom to fit both parties and the encounter circle.
+          const coords = [];
+          vectorSource.forEachFeature(feat => {
+            if (feat.get('id') === p.asset_a_id || feat.get('id') === p.asset_b_id) {
+              coords.push(feat.getGeometry().getCoordinates());
+            }
+          });
+          coords.push(ol.proj.fromLonLat([mlon, mlat]));
+          const xs = coords.map(c => c[0]);
+          const ys = coords.map(c => c[1]);
+          map.getView().fit(
+            [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+            { padding: [120, 120, 120, 120], maxZoom: 17, duration: 500 }
+          );
+        });
+        ixList.appendChild(li);
+      });
+    }
+
+    async function refreshInteractions() {
+      try {
+        const res = await fetch(`${API_ROOT}/interactions?limit=200`,
+                                { cache: 'no-store' });
+        const data = await res.json();
+        latestInteractions = data.features || [];
+        renderInteractions(latestInteractions);
+      } catch (err) {
+        console.error('interactions fetch failed', err);
+        ixCount.textContent = 'API error';
+      }
+    }
+
+    refreshInteractions();
+    setInterval(refreshInteractions, 5000);
 
     enterLive();
   </script>

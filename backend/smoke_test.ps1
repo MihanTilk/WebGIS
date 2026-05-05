@@ -44,6 +44,7 @@ $createBody = @{ name="Smoke Test Asset"; asset_type="equipment"; longitude=79.8
 $created = Invoke-RestMethod -Method Post -Uri "$base/assets" `
     -Body $createBody -ContentType "application/json"
 "  new id: $($created.id)"
+$smokeId = $created.id    # remembered so we can clean up at the end
 
 # ---- history & motion ----
 Section "GET /api/assets/$firstId/history?hours=24"
@@ -79,6 +80,19 @@ Section "GET /api/proximity?lon=79.86&lat=6.92&radius_m=10000"
 $prox = Invoke-RestMethod "$base/proximity?lon=79.86&lat=6.92&radius_m=10000"
 "  assets within 10 km of central Colombo: $($prox.metadata.count)"
 
+# ---- interactions ----
+Section "GET /api/interactions/rules"
+$rules = Invoke-RestMethod "$base/interactions/rules"
+"  $($rules.Count) rule(s) defined: $((($rules | ForEach-Object { $_.kind }) -join ', '))"
+
+Section "POST /api/interactions/detect"
+$det = Invoke-RestMethod -Method Post -Uri "$base/interactions/detect"
+"  opened: $($det.opened) | closed: $($det.closed) | rules: $($det.rules)"
+
+Section "GET /api/interactions"
+$ix = Invoke-RestMethod "$base/interactions"
+"  recent interactions (>= min_duration): $($ix.metadata.count)"
+
 # ---- error paths ----
 Section "Error paths (expected to fail)"
 try {
@@ -95,6 +109,14 @@ try { Invoke-RestMethod "$base/assets?type=alien" | Out-Null } catch {
 try { Invoke-RestMethod "$base/proximity?lon=200&lat=0&radius_m=100" | Out-Null } catch {
     "  GET bad coords  -> $($_.Exception.Response.StatusCode) (expected 400)"
 }
+try { Invoke-RestMethod "$base/interactions?kind=BOGUS" | Out-Null } catch {
+    "  GET bad kind    -> $($_.Exception.Response.StatusCode) (expected 400)"
+}
+
+# ---- Cleanup: delete the smoke-test asset we created earlier ----
+Section "DELETE /api/assets/$smokeId  (cleanup)"
+$del = Invoke-RestMethod -Method Delete -Uri "$base/assets/$smokeId"
+"  status: $($del.status) | id: $($del.id)"
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green

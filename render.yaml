@@ -1,0 +1,77 @@
+# Render Blueprint — provisions Postgres+PostGIS, the Flask API, the static
+# frontend, and the simulator worker. After Render creates the services,
+# the only manual steps are:
+#   1. Apply sql/01_schema.sql + sql/03_history.sql against the new DB
+#      (use the External Connection String from Render → Databases → Connect).
+#   2. Set the API_BASE env var on the simulator worker AND the api-root meta
+#      tag in frontend/index.html to the deployed backend URL.
+
+databases:
+  - name: asset-tracking-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+
+services:
+  # Flask API
+  - type: web
+    name: asset-tracking-api
+    runtime: python
+    region: singapore
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 60 app:app
+    healthCheckPath: /api/assets
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: FLASK_DEBUG
+        value: "0"
+      - key: DB_HOST
+        fromDatabase:
+          name: asset-tracking-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: asset-tracking-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: asset-tracking-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: asset-tracking-db
+          property: user
+      - key: DB_PASS
+        fromDatabase:
+          name: asset-tracking-db
+          property: password
+
+  # Static frontend
+  - type: web
+    name: asset-tracking-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: ""
+    staticPublishPath: .
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: "no-cache"
+
+  # Simulator (background worker — keeps the demo "alive")
+  - type: worker
+    name: asset-tracking-simulator
+    runtime: python
+    region: singapore
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python simulator.py --interval 10 --spawn-every 30 --spawn-max 25 --island
+    envVars:
+      # Set this manually after first deploy to the deployed API URL,
+      # e.g. https://asset-tracking-api.onrender.com/api
+      - key: API_BASE
+        sync: false

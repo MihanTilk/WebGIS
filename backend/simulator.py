@@ -5,7 +5,7 @@ CLI flags:
   --interval SECS         How often each tick fires (default 5)
   --spawn-every SECS      Auto-spawn a new asset every N ticks (default 0 = off)
   --spawn-max N           Stop spawning once total reaches N (default 50)
-  --jitter DEG            Max degrees of random walk per axis per tick (default 0.0008)
+  --jitter DEG            Max degrees of random walk per axis per tick (default 0.002 ≈ 220 m)
   --center LON,LAT        Centre to spawn around (default 79.880,6.900 = Colombo)
   --spawn-radius DEG      How far from centre new assets can appear (default 0.02)
   --types LIST            Comma list of types to pick from (default vehicle,person,equipment)
@@ -18,13 +18,17 @@ Examples:
 """
 
 import argparse
+import os
 import random
 import sys
 import time
 
 import requests
 
-API = "http://localhost:5000/api/assets"
+# Override locally with API_BASE=https://your-app.onrender.com/api in the env.
+API_BASE = os.getenv("API_BASE", "http://localhost:5000/api").rstrip("/")
+API = f"{API_BASE}/assets"
+INTERACTIONS_DETECT_URL = f"{API_BASE}/interactions/detect"
 NAME_POOL = {
     "vehicle": ["Truck", "Van", "Lorry", "Pickup", "Bus", "Bike"],
     "person": ["Surveyor", "Inspector", "Technician", "Field Agent", "Engineer"],
@@ -65,7 +69,8 @@ def parse_args():
     p.add_argument("--spawn-every", type=int, default=0,
                    help="0 disables spawning")
     p.add_argument("--spawn-max", type=int, default=50)
-    p.add_argument("--jitter", type=float, default=0.0008)
+    p.add_argument("--jitter", type=float, default=0.002,
+                   help="Max degrees per axis per tick (default 0.002 ≈ 220 m)")
     p.add_argument("--center", default="79.880,6.900",
                    help="LON,LAT pair around which new assets spawn (ignored if --island)")
     p.add_argument("--spawn-radius", type=float, default=0.02)
@@ -193,6 +198,19 @@ def main():
             if result is not None:
                 new_id, pos = result
                 positions[new_id] = pos
+
+        # Drive interaction detection on the same cadence as movement.
+        try:
+            r = requests.post(INTERACTIONS_DETECT_URL, timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("opened") or d.get("closed"):
+                    print(f"  interactions: +{d['opened']} opened, "
+                          f"{d['closed']} closed")
+            else:
+                print(f"  interactions detect: {r.status_code} {r.text}")
+        except requests.RequestException as e:
+            print(f"  interactions detect failed: {e}")
 
         print(f"tick {tick} — {len(positions)} assets")
         time.sleep(args.interval)

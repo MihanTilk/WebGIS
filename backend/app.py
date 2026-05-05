@@ -23,6 +23,28 @@ DB = dict(
 
 VALID_TYPES = {"vehicle", "person", "equipment"}
 
+# Asset-interaction rules. Each pair of types means a different real-world
+# phenomenon, so the proximity threshold and the minimum dwell time differ.
+# Distances are metres on the WGS84 spheroid (geography type), durations are
+# seconds. Types are unordered — the SQL handles (a,b) and (b,a) equivalently.
+#
+# DEMO VALUES vs REAL-WORLD VALUES: the original/spec thresholds (5–20 m,
+# 10–60 s) are realistic for actual GPS pings but never fire in this random-
+# walk simulation, where assets jitter ~200 m per tick and rarely linger in
+# the same spot. The values below are deliberately loosened so encounter
+# events are visible during a 1–2 minute demo. For a real deployment with
+# real GPS, swap them back to the column on the right.
+#                                              demo  /  real-world
+INTERACTION_RULES = [
+    # (type_a,    type_b,      distance_m, min_duration_s, kind)
+    ("vehicle",   "person",    150.0,  4, "PICKUP"),     # 10 m, 30 s
+    ("vehicle",   "equipment", 150.0,  4, "LOADING"),    # 10 m, 30 s
+    ("person",    "equipment",  80.0,  6, "OPERATING"),  #  5 m, 60 s
+    ("person",    "person",     80.0,  6, "MEETING"),    #  5 m, 60 s
+    ("vehicle",   "vehicle",   300.0,  4, "CONVOY"),     # 20 m, 10 s
+]
+VALID_KINDS = {r[4] for r in INTERACTION_RULES}
+
 # Sri Lanka Kandawala / Sri Lanka Grid (Transverse Mercator). Locally
 # conformal — preserves angles and shapes for surveying/engineering use,
 # unlike Web Mercator which is conformal globally but heavily area-distorted
@@ -278,14 +300,21 @@ def get_asset_history(asset_id):
             if asset is None:
                 return jsonify({"error": "Not found"}), 404
 
+            # Take the MOST RECENT `limit` rows within the time window
+            # (subquery sorts DESC + LIMIT), then re-order ASC so the
+            # LineString draws oldest → newest.
             cur.execute(
                 """
-                SELECT recorded_at, ST_X(geom) AS lon, ST_Y(geom) AS lat
-                FROM asset_history
-                WHERE asset_id = %s
-                  AND recorded_at >= NOW() - make_interval(hours => %s)
+                SELECT recorded_at, lon, lat
+                FROM (
+                    SELECT recorded_at, ST_X(geom) AS lon, ST_Y(geom) AS lat
+                    FROM asset_history
+                    WHERE asset_id = %s
+                      AND recorded_at >= NOW() - make_interval(hours => %s)
+                    ORDER BY recorded_at DESC
+                    LIMIT %s
+                ) t
                 ORDER BY recorded_at ASC
-                LIMIT %s
                 """,
                 (asset_id, hours, limit),
             )
@@ -511,6 +540,21 @@ def create_asset():
     return jsonify({"status": "success", "id": new_id}), 201
 
 
+@app.route("/api/assets/<int:asset_id>", methods=["DELETE"])
+def delete_asset(asset_id):
+    """Delete an asset. ON DELETE CASCADE removes its history and interactions."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM assets WHERE id = %s", (asset_id,))
+            if cur.rowcount == 0:
+                return jsonify({"error": "Not found"}), 404
+            conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"status": "deleted", "id": asset_id})
+
+
 @app.route("/api/assets/<int:asset_id>", methods=["PUT"])
 def update_asset(asset_id):
     data = request.get_json(silent=True) or {}
@@ -542,5 +586,198 @@ def update_asset(asset_id):
     return jsonify({"status": "success"})
 
 
+# ----------------------------- Interactions ---------------------------------
+
+# Reusable VALUES list: ('vehicle','person',10.0,'PICKUP'),...
+_RULE_VALUES_SQL = ",".join(
+    f"('{r[0]}','{r[1]}',{r[2]},'{r[4]}')" for r in INTERACTION_RULES
+)
+_DURATION_VALUES_SQL = ",".join(
+    f"('{r[4]}',{r[3]})" for r in INTERACTION_RULES
+)
+
+
+@app.route("/api/interactions/detect", methods=["POST"])
+def detect_interactions():
+    """Run one detection sweep across the current `assets` table.
+
+    Idempotent: opens new interactions for type-pairs that satisfy a rule's
+    distance threshold and aren't already active; closes (sets `ended_at`)
+    interactions whose pair has now drifted out of range. Intended to be
+    called periodically by the simulator after every tick.
+    """
+    open_sql = f"""
+        WITH rules(a_t, b_t, dist_m, kind) AS (VALUES {_RULE_VALUES_SQL}),
+        candidate_pairs AS (
+            SELECT
+                LEAST(a.id, b.id)    AS asset_a_id,
+                GREATEST(a.id, b.id) AS asset_b_id,
+                r.kind,
+                ST_Centroid(ST_Collect(a.geom, b.geom)) AS midpoint
+            FROM assets a
+            JOIN assets b ON a.id < b.id
+            JOIN rules r ON
+                ((a.asset_type = r.a_t AND b.asset_type = r.b_t)
+              OR (a.asset_type = r.b_t AND b.asset_type = r.a_t))
+            WHERE ST_DWithin(a.geom::geography, b.geom::geography, r.dist_m)
+        )
+        INSERT INTO interactions (asset_a_id, asset_b_id, kind, started_at, location)
+        SELECT cp.asset_a_id, cp.asset_b_id, cp.kind, NOW(), cp.midpoint
+        FROM candidate_pairs cp
+        WHERE NOT EXISTS (
+            SELECT 1 FROM interactions i
+            WHERE i.asset_a_id = cp.asset_a_id
+              AND i.asset_b_id = cp.asset_b_id
+              AND i.kind = cp.kind
+              AND i.ended_at IS NULL
+        )
+    """
+
+    close_sql = f"""
+        WITH rules(a_t, b_t, dist_m, kind) AS (VALUES {_RULE_VALUES_SQL}),
+        current_pairs AS (
+            SELECT
+                LEAST(a.id, b.id)    AS asset_a_id,
+                GREATEST(a.id, b.id) AS asset_b_id,
+                r.kind
+            FROM assets a
+            JOIN assets b ON a.id < b.id
+            JOIN rules r ON
+                ((a.asset_type = r.a_t AND b.asset_type = r.b_t)
+              OR (a.asset_type = r.b_t AND b.asset_type = r.a_t))
+            WHERE ST_DWithin(a.geom::geography, b.geom::geography, r.dist_m)
+        )
+        UPDATE interactions i
+        SET ended_at = NOW()
+        WHERE i.ended_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM current_pairs cp
+              WHERE cp.asset_a_id = i.asset_a_id
+                AND cp.asset_b_id = i.asset_b_id
+                AND cp.kind = i.kind
+          )
+    """
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(open_sql)
+            opened = cur.rowcount
+            cur.execute(close_sql)
+            closed = cur.rowcount
+            conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"opened": opened, "closed": closed, "rules": len(INTERACTION_RULES)})
+
+
+@app.route("/api/interactions", methods=["GET"])
+def list_interactions():
+    """Recent interactions, filtered by min-duration per kind, plus optional
+    `kind`, `since` (ISO ts), `limit`, and `active_only` query params."""
+    kind = request.args.get("kind")
+    if kind is not None and kind not in VALID_KINDS:
+        return jsonify({"error": f"kind must be one of {sorted(VALID_KINDS)}"}), 400
+
+    since = request.args.get("since")
+    parsed_since = None
+    if since:
+        try:
+            if since.endswith("Z"):
+                aware = datetime.fromisoformat(since[:-1]).replace(tzinfo=timezone.utc)
+            else:
+                aware = datetime.fromisoformat(since)
+                if aware.tzinfo is None:
+                    aware = aware.replace(tzinfo=timezone.utc)
+            parsed_since = aware.astimezone().replace(tzinfo=None)
+        except ValueError:
+            return jsonify({"error": "'since' must be a valid ISO timestamp"}), 400
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", 200)), 2000))
+    except (TypeError, ValueError):
+        return jsonify({"error": "limit must be an integer"}), 400
+
+    active_only = request.args.get("active_only", "false").lower() in ("1", "true", "yes")
+
+    sql = f"""
+        WITH rules(kind, min_duration_s) AS (VALUES {_DURATION_VALUES_SQL})
+        SELECT v.*
+        FROM interactions_view v
+        JOIN rules r ON r.kind = v.kind
+        WHERE v.duration_s >= r.min_duration_s
+    """
+    params = []
+    if kind:
+        sql += " AND v.kind = %s"
+        params.append(kind)
+    if parsed_since:
+        sql += " AND v.started_at >= %s"
+        params.append(parsed_since)
+    if active_only:
+        sql += " AND v.ended_at IS NULL"
+    sql += " ORDER BY v.started_at DESC LIMIT %s"
+    params.append(limit)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
+            "properties": {
+                "id": r["id"],
+                "kind": r["kind"],
+                "asset_a_id": r["asset_a_id"],
+                "asset_a_name": r["asset_a_name"],
+                "asset_a_type": r["asset_a_type"],
+                "asset_b_id": r["asset_b_id"],
+                "asset_b_name": r["asset_b_name"],
+                "asset_b_type": r["asset_b_type"],
+                "started_at": r["started_at"].isoformat(),
+                "ended_at": r["ended_at"].isoformat() if r["ended_at"] else None,
+                "duration_s": r["duration_s"],
+                "active": r["ended_at"] is None,
+            },
+        }
+        for r in rows
+    ]
+    return jsonify(
+        {
+            "type": "FeatureCollection",
+            "features": features,
+            "metadata": {
+                "count": len(features),
+                "kind": kind,
+                "since": parsed_since.isoformat() if parsed_since else None,
+                "active_only": active_only,
+            },
+        }
+    )
+
+
+@app.route("/api/interactions/rules", methods=["GET"])
+def interaction_rules():
+    """Expose the rule table so the frontend can render filter chips/icons
+    without hard-coding it."""
+    return jsonify(
+        [
+            {"type_a": a, "type_b": b, "distance_m": d, "min_duration_s": t, "kind": k}
+            for (a, b, d, t, k) in INTERACTION_RULES
+        ]
+    )
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Local dev only. In production, gunicorn imports `app` directly
+    # (see Procfile) and this block doesn't run.
+    port = int(os.getenv("PORT", "5000"))
+    debug = os.getenv("FLASK_DEBUG", "1") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug)
