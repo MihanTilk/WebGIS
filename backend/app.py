@@ -341,6 +341,73 @@ def get_asset_history(asset_id):
     return jsonify(response)
 
 
+@app.route("/api/proximity", methods=["GET"])
+def proximity():
+    """Find every asset within radius_m metres of (lon, lat).
+
+    Uses ST_DWithin on the geography type so the radius is interpreted
+    in real metres on the WGS84 spheroid (independent of latitude
+    distortion). The GIST index on `assets.geom` makes this O(log n)
+    bounding-box pruning before the precise distance check — the
+    canonical 'proximity' relationship from Lec 1.
+    """
+    try:
+        lon = float(request.args["lon"])
+        lat = float(request.args["lat"])
+        radius_m = float(request.args.get("radius_m", 5000))
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "lon, lat (required) and radius_m must be numeric"}), 400
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        return jsonify({"error": "Coordinates out of range"}), 400
+    if not (1 <= radius_m <= 1_000_000):
+        return jsonify({"error": "radius_m must be between 1 and 1,000,000"}), 400
+
+    type_filter = request.args.get("type")
+    if type_filter is not None and type_filter not in VALID_TYPES:
+        return jsonify({"error": f"type must be one of {sorted(VALID_TYPES)}"}), 400
+
+    sql = (
+        f"SELECT id, name, asset_type, last_seen, {GEOM_SELECT}, "
+        "       ST_Distance(geom::geography, "
+        "                   ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography) AS distance_m "
+        "FROM assets "
+        "WHERE ST_DWithin(geom::geography, "
+        "                 ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)"
+    )
+    params = [lon, lat, lon, lat, radius_m]
+    if type_filter:
+        sql += " AND asset_type = %s"
+        params.append(type_filter)
+    sql += " ORDER BY distance_m ASC"
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    features = []
+    for r in rows:
+        f = row_to_feature(r)
+        f["properties"]["distance_m"] = round(r["distance_m"], 1)
+        features.append(f)
+
+    return jsonify(
+        {
+            "type": "FeatureCollection",
+            "features": features,
+            "metadata": {
+                "lon": lon,
+                "lat": lat,
+                "radius_m": radius_m,
+                "count": len(features),
+            },
+        }
+    )
+
+
 @app.route("/api/assets", methods=["POST"])
 def create_asset():
     """Create a new asset. Body: {"name": str, "asset_type": str, "latitude": float, "longitude": float}"""

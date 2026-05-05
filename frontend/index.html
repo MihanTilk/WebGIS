@@ -89,6 +89,18 @@
       </select>
       <div id="heatmap-status" style="font-size:12px;color:#666;margin-top:2px;"></div>
     </div>
+
+    <hr>
+    <div>
+      <label><input type="checkbox" id="proximity-toggle"> Proximity search</label>
+      <div style="margin-top:4px;">
+        <label for="proximity-radius" style="font-size:12px;">Radius:</label>
+        <input type="range" id="proximity-radius" min="100" max="50000" step="100" value="5000"
+               style="vertical-align:middle; width:140px;">
+        <span id="proximity-radius-label" style="font-size:12px;">5.0 km</span>
+      </div>
+      <div id="proximity-status" style="font-size:12px;color:#666;margin-top:2px;"></div>
+    </div>
   </div>
 
   <div class="legend">
@@ -112,8 +124,34 @@
 
     const COLORS = { vehicle: '#1976d2', person: '#e53935', equipment: '#43a047' };
 
+    // Set of asset IDs currently matched by the proximity query.
+    let matchedAssetIds = new Set();
+    let proximityActive = false;
+    let lastProximityClick = null;
+
     function styleFor(feature) {
       const color = COLORS[feature.get('asset_type')] || '#555';
+      const id = feature.get('id');
+
+      if (proximityActive && lastProximityClick !== null) {
+        if (matchedAssetIds.has(id)) {
+          return new ol.style.Style({
+            image: new ol.style.Circle({
+              radius: 10,
+              fill: new ol.style.Fill({ color }),
+              stroke: new ol.style.Stroke({ color: '#FFD700', width: 4 })
+            })
+          });
+        }
+        return new ol.style.Style({
+          image: new ol.style.Circle({
+            radius: 5,
+            fill: new ol.style.Fill({ color: 'rgba(120,120,120,0.35)' }),
+            stroke: new ol.style.Stroke({ color: 'rgba(255,255,255,0.6)', width: 1 })
+          })
+        });
+      }
+
       return new ol.style.Style({
         image: new ol.style.Circle({
           radius: 8,
@@ -149,13 +187,24 @@
       visible: false,
     });
 
+    // Proximity search circle (drawn under markers so it doesn't block clicks).
+    const proximitySource = new ol.source.Vector();
+    const proximityLayer  = new ol.layer.Vector({
+      source: proximitySource,
+      style: new ol.style.Style({
+        stroke: new ol.style.Stroke({ color: 'rgba(255,140,0,0.85)', width: 2, lineDash: [5,5] }),
+        fill:   new ol.style.Fill({   color: 'rgba(255,140,0,0.10)' })
+      })
+    });
+
     const map = new ol.Map({
       target: 'map',
       layers: [
         new ol.layer.Tile({ source: new ol.source.OSM() }),
-        heatmapLayer, // above tiles, below trails/markers so markers stay clickable
+        heatmapLayer,    // above tiles
+        proximityLayer,  // above heatmap
         trailLayer,
-        vectorLayer
+        vectorLayer      // markers stay on top so clicks always hit them
       ],
       view: new ol.View({
         center: ol.proj.fromLonLat([79.88, 6.90]),
@@ -241,7 +290,109 @@
       popupContent.appendChild(trailLine);
     }
 
+    // ---------- Proximity search ----------
+    const proximityToggle      = document.getElementById('proximity-toggle');
+    const proximityRadius      = document.getElementById('proximity-radius');
+    const proximityRadiusLabel = document.getElementById('proximity-radius-label');
+    const proximityStatus      = document.getElementById('proximity-status');
+
+    function fmtRadius(m) {
+      return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`;
+    }
+    function updateRadiusLabel() {
+      proximityRadiusLabel.textContent = fmtRadius(Number(proximityRadius.value));
+    }
+    updateRadiusLabel();
+
+    // Build a polygon approximation of a circle on the WGS84 spheroid,
+    // then transform to Web Mercator for display. Avoids the latitude
+    // distortion you get from ol.geom.Circle in EPSG:3857.
+    function geographicCirclePolygon(centerLon, centerLat, radiusM, sides = 96) {
+      const coords = [];
+      const dLat = radiusM / 111320;
+      const cosLat = Math.cos(centerLat * Math.PI / 180);
+      for (let i = 0; i <= sides; i++) {
+        const a = (i / sides) * 2 * Math.PI;
+        coords.push([
+          centerLon + (Math.cos(a) * dLat) / cosLat,
+          centerLat +  Math.sin(a) * dLat
+        ]);
+      }
+      const poly = new ol.geom.Polygon([coords]);
+      poly.transform('EPSG:4326', 'EPSG:3857');
+      return poly;
+    }
+
+    async function runProximity(lon, lat) {
+      const radius_m = Number(proximityRadius.value);
+      lastProximityClick = { lon, lat, radius_m };
+
+      // Draw the circle
+      proximitySource.clear();
+      proximitySource.addFeature(new ol.Feature({
+        geometry: geographicCirclePolygon(lon, lat, radius_m),
+        kind: 'search-circle'
+      }));
+
+      // Hit the API
+      const type = filterEl.value;
+      const params = new URLSearchParams({ lon, lat, radius_m });
+      if (type) params.set('type', type);
+      proximityStatus.textContent = `Searching within ${fmtRadius(radius_m)}…`;
+      try {
+        const res = await fetch(`${API_ROOT}/proximity?${params}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+
+        matchedAssetIds = new Set(
+          data.features.map(f => f.properties.id).filter(id => id != null)
+        );
+        vectorLayer.changed();   // re-style markers
+        proximityStatus.textContent =
+          `${data.metadata.count} asset${data.metadata.count === 1 ? '' : 's'} `
+          + `within ${fmtRadius(radius_m)}`;
+      } catch (err) {
+        console.error('proximity failed', err);
+        proximityStatus.textContent = 'API error: ' + err.message;
+      }
+    }
+
+    function clearProximity() {
+      proximitySource.clear();
+      matchedAssetIds = new Set();
+      lastProximityClick = null;
+      proximityStatus.textContent = '';
+      vectorLayer.changed();
+    }
+
+    proximityToggle.addEventListener('change', () => {
+      proximityActive = proximityToggle.checked;
+      if (proximityActive) {
+        popupEl.style.display = 'none';
+        trailSource.clear();
+        proximityStatus.textContent = 'Click anywhere on the map.';
+      } else {
+        clearProximity();
+      }
+      vectorLayer.changed();
+    });
+
+    proximityRadius.addEventListener('input', () => {
+      updateRadiusLabel();
+      // Live re-query at the last click while sliding.
+      if (proximityActive && lastProximityClick) {
+        runProximity(lastProximityClick.lon, lastProximityClick.lat);
+      }
+    });
+
     map.on('singleclick', async evt => {
+      // Proximity mode hijacks the click.
+      if (proximityActive) {
+        const [lon, lat] = ol.proj.toLonLat(evt.coordinate);
+        await runProximity(lon, lat);
+        return;
+      }
+
       const feature = map.forEachFeatureAtPixel(evt.pixel, f => f, {
         layerFilter: layer => layer === vectorLayer
       });
