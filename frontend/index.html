@@ -128,13 +128,14 @@
         const res = await fetch(`${API_BASE}/${assetId}/history?hours=1`,
                                 { cache: 'no-store' });
         const data = await res.json();
-        if (!data.features.length) return 0;
+        const count = data.metadata?.point_count ?? 0;
+        if (!data.features.length) return count;
         const features = new ol.format.GeoJSON().readFeatures(data, {
           featureProjection: 'EPSG:3857'
         });
         features.forEach(f => f.set('asset_type', assetType));
         trailSource.addFeatures(features);
-        return data.properties.point_count || 0;
+        return count;
       } catch (e) {
         console.error('trail fetch failed', e);
         return 0;
