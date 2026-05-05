@@ -62,6 +62,22 @@ def get_conn():
     return psycopg2.connect(**DB)
 
 
+def utc_iso(dt):
+    """Render a datetime as an ISO 8601 string with explicit UTC `Z`.
+
+    DB columns are TIMESTAMP without time zone, but on Render the server
+    runs in UTC and `NOW()` returns UTC, so naive values here are
+    effectively UTC. Without the `Z` suffix, browsers interpret the ISO
+    string as local time and the slider/snapshot epoch math drifts by
+    the client's offset.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def row_to_feature(row):
     raw = row["geojson_geom"]
     geom = json.loads(raw) if raw is not None else None
@@ -70,7 +86,7 @@ def row_to_feature(row):
         "id": row["id"],
         "name": row["name"],
         "asset_type": row["asset_type"],
-        "last_seen": row["last_seen"].isoformat() if row["last_seen"] else None,
+        "last_seen": utc_iso(row["last_seen"]),
     }
     if "easting" in keys and row["easting"] is not None:
         properties["easting"] = round(row["easting"], 2)
@@ -154,8 +170,8 @@ def history_range():
         conn.close()
     return jsonify(
         {
-            "earliest": row["earliest"].isoformat() if row["earliest"] else None,
-            "latest": row["latest"].isoformat() if row["latest"] else None,
+            "earliest": utc_iso(row["earliest"]),
+            "latest": utc_iso(row["latest"]),
         }
     )
 
@@ -167,16 +183,17 @@ def snapshot():
     if not at:
         return jsonify({"error": "Missing 'at' query parameter (ISO timestamp)"}), 400
     try:
-        # Frontend (Date.toISOString) sends UTC ending in 'Z'. Treat
-        # naive strings as UTC too. The DB stores TIMESTAMP without tz
-        # in server-local time, so convert to local naive for comparison.
+        # Frontend (Date.toISOString) sends UTC ending in 'Z'. Treat naive
+        # strings as UTC too. DB column is TIMESTAMP-without-tz holding
+        # UTC, so we compare against a naive UTC datetime regardless of
+        # what timezone the Flask process happens to be running in.
         if at.endswith("Z"):
             aware = datetime.fromisoformat(at[:-1]).replace(tzinfo=timezone.utc)
         else:
             aware = datetime.fromisoformat(at)
             if aware.tzinfo is None:
                 aware = aware.replace(tzinfo=timezone.utc)
-        parsed = aware.astimezone().replace(tzinfo=None)
+        parsed = aware.astimezone(timezone.utc).replace(tzinfo=None)
     except ValueError:
         return jsonify({"error": "'at' must be a valid ISO timestamp"}), 400
 
@@ -213,7 +230,7 @@ def snapshot():
         {
             "type": "FeatureCollection",
             "features": [row_to_feature(r) for r in rows],
-            "metadata": {"snapshot_at": parsed.isoformat(), "count": len(rows)},
+            "metadata": {"snapshot_at": utc_iso(parsed), "count": len(rows)},
         }
     )
 
@@ -330,7 +347,7 @@ def get_asset_history(asset_id):
         conn.close()
 
     coords = [[r["lon"], r["lat"]] for r in rows]
-    timestamps = [r["recorded_at"].isoformat() for r in rows]
+    timestamps = [utc_iso(r["recorded_at"]) for r in rows]
 
     features = []
     if len(coords) >= 2:
@@ -437,7 +454,7 @@ def get_motion(asset_id):
             "heading_deg": round(heading, 1) if heading is not None else None,
             "sample_seconds": round(dt_s, 1),
             "distance_m": round(distance_m, 1),
-            "at_time": row["at_time"].isoformat(),
+            "at_time": utc_iso(row["at_time"]),
         }
     )
 
@@ -748,8 +765,8 @@ def list_interactions():
                 "asset_b_id": r["asset_b_id"],
                 "asset_b_name": r["asset_b_name"],
                 "asset_b_type": r["asset_b_type"],
-                "started_at": r["started_at"].isoformat(),
-                "ended_at": r["ended_at"].isoformat() if r["ended_at"] else None,
+                "started_at": utc_iso(r["started_at"]),
+                "ended_at": utc_iso(r["ended_at"]),
                 "duration_s": r["duration_s"],
                 "active": r["ended_at"] is None,
             },
@@ -763,7 +780,7 @@ def list_interactions():
             "metadata": {
                 "count": len(features),
                 "kind": kind,
-                "since": parsed_since.isoformat() if parsed_since else None,
+                "since": utc_iso(parsed_since),
                 "active_only": active_only,
             },
         }
