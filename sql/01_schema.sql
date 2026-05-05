@@ -8,7 +8,20 @@ CREATE TABLE IF NOT EXISTS assets (
     name        TEXT NOT NULL,
     asset_type  TEXT NOT NULL,
     last_seen   TIMESTAMP DEFAULT NOW(),
-    geom        GEOMETRY(Point, 4326)
+    geom        GEOMETRY(Point, 4326) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_assets_geom ON assets USING GIST (geom);
+
+-- Tighten existing tables (NOOP if already NOT NULL).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'assets'
+          AND column_name = 'geom'
+          AND is_nullable = 'YES'
+    ) THEN
+        ALTER TABLE assets ALTER COLUMN geom SET NOT NULL;
+    END IF;
+END $$;

@@ -2,6 +2,7 @@
 location to the Flask API every few seconds. Run alongside `app.py`."""
 
 import random
+import sys
 import time
 
 import requests
@@ -16,28 +17,43 @@ def jitter(value):
 
 
 def main():
-    resp = requests.get(API, timeout=10)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(API, timeout=10)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Cannot reach Flask API at {API}: {e}", file=sys.stderr)
+        print("Is `python app.py` running?", file=sys.stderr)
+        sys.exit(1)
+
     features = resp.json()["features"]
     positions = {
         f["properties"]["id"]: list(f["geometry"]["coordinates"]) for f in features
     }
-    print(f"Tracking {len(positions)} assets")
+    if not positions:
+        print("No assets in database — load sample data first.", file=sys.stderr)
+        sys.exit(1)
 
+    print(f"Tracking {len(positions)} assets (Ctrl+C to stop)")
     while True:
         for asset_id, (lon, lat) in positions.items():
             new_lon, new_lat = jitter(lon), jitter(lat)
             positions[asset_id] = [new_lon, new_lat]
-            r = requests.put(
-                f"{API}/{asset_id}",
-                json={"longitude": new_lon, "latitude": new_lat},
-                timeout=5,
-            )
-            if r.status_code != 200:
-                print(f"  asset {asset_id}: {r.status_code} {r.text}")
+            try:
+                r = requests.put(
+                    f"{API}/{asset_id}",
+                    json={"longitude": new_lon, "latitude": new_lat},
+                    timeout=5,
+                )
+                if r.status_code != 200:
+                    print(f"  asset {asset_id}: {r.status_code} {r.text}")
+            except requests.RequestException as e:
+                print(f"  asset {asset_id}: network error {e}")
         print(f"tick — moved {len(positions)} assets")
         time.sleep(INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nSimulator stopped.")

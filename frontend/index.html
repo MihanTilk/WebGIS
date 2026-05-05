@@ -88,10 +88,23 @@
     const vectorSource = new ol.source.Vector();
     const vectorLayer  = new ol.layer.Vector({ source: vectorSource, style: styleFor });
 
+    // Movement-history trail (drawn under markers)
+    const trailSource = new ol.source.Vector();
+    const trailLayer  = new ol.layer.Vector({
+      source: trailSource,
+      style: feature => {
+        const color = COLORS[feature.get('asset_type')] || '#555';
+        return new ol.style.Style({
+          stroke: new ol.style.Stroke({ color, width: 3, lineDash: [6, 6] })
+        });
+      }
+    });
+
     const map = new ol.Map({
       target: 'map',
       layers: [
         new ol.layer.Tile({ source: new ol.source.OSM() }),
+        trailLayer,    // under the markers
         vectorLayer
       ],
       view: new ol.View({
@@ -109,20 +122,69 @@
     });
     map.addOverlay(popup);
 
-    map.on('singleclick', evt => {
-      const feature = map.forEachFeatureAtPixel(evt.pixel, f => f);
+    async function showTrail(assetId, assetType) {
+      trailSource.clear();
+      try {
+        const res = await fetch(`${API_BASE}/${assetId}/history?hours=1`,
+                                { cache: 'no-store' });
+        const data = await res.json();
+        if (!data.features.length) return 0;
+        const features = new ol.format.GeoJSON().readFeatures(data, {
+          featureProjection: 'EPSG:3857'
+        });
+        features.forEach(f => f.set('asset_type', assetType));
+        trailSource.addFeatures(features);
+        return data.properties.point_count || 0;
+      } catch (e) {
+        console.error('trail fetch failed', e);
+        return 0;
+      }
+    }
+
+    function renderPopup(feature) {
+      // Build with DOM nodes (textContent is XSS-safe).
+      const seen = feature.get('last_seen');
+      popupContent.replaceChildren();
+      const name = document.createElement('strong');
+      name.textContent = feature.get('name') ?? '';
+      const type = document.createElement('em');
+      type.textContent = feature.get('asset_type') ?? '';
+      const idLine    = document.createTextNode(`ID: ${feature.get('id')}`);
+      const seenLine  = document.createTextNode(
+        'Last seen: ' + (seen ? new Date(seen).toLocaleString() : '—')
+      );
+      const trailLine = document.createElement('span');
+      trailLine.id = 'trail-info';
+      trailLine.textContent = 'Loading trail…';
+
+      popupContent.append(name, document.createElement('br'),
+                          type, document.createElement('br'),
+                          idLine, document.createElement('br'),
+                          seenLine, document.createElement('br'),
+                          trailLine);
+    }
+
+    map.on('singleclick', async evt => {
+      const feature = map.forEachFeatureAtPixel(evt.pixel, f => f, {
+        layerFilter: layer => layer === vectorLayer
+      });
       if (feature) {
-        const seen = feature.get('last_seen');
-        popupContent.innerHTML = `
-          <strong>${feature.get('name')}</strong><br>
-          <em>${feature.get('asset_type')}</em><br>
-          ID: ${feature.get('id')}<br>
-          Last seen: ${seen ? new Date(seen).toLocaleString() : '—'}
-        `;
+        renderPopup(feature);
         popup.setPosition(evt.coordinate);
         popupEl.style.display = 'block';
+
+        const count = await showTrail(feature.get('id'), feature.get('asset_type'));
+        const info  = document.getElementById('trail-info');
+        if (info) {
+          info.textContent = count >= 2
+            ? `Trail: ${count} positions in last hour`
+            : count === 1
+              ? 'Trail: only origin point so far'
+              : 'Trail: no history yet';
+        }
       } else {
         popupEl.style.display = 'none';
+        trailSource.clear();
       }
     });
 
