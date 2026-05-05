@@ -13,12 +13,15 @@ CREATE INDEX IF NOT EXISTS idx_history_asset_time
 CREATE INDEX IF NOT EXISTS idx_history_geom
     ON asset_history USING GIST (geom);
 
--- Trigger function: log every position change to history.
+-- Trigger function: log every INSERT and every geom change to history.
+-- Firing on INSERT means freshly created assets immediately have an origin
+-- row in history (no need for a separate backfill on each new seed).
 CREATE OR REPLACE FUNCTION log_asset_position() RETURNS TRIGGER AS $$
 BEGIN
-    IF OLD.geom IS DISTINCT FROM NEW.geom THEN
+    IF TG_OP = 'INSERT'
+       OR OLD.geom IS DISTINCT FROM NEW.geom THEN
         INSERT INTO asset_history (asset_id, recorded_at, geom)
-        VALUES (NEW.id, NEW.last_seen, NEW.geom);
+        VALUES (NEW.id, COALESCE(NEW.last_seen, NOW()), NEW.geom);
     END IF;
     RETURN NEW;
 END;
@@ -26,7 +29,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_log_asset_position ON assets;
 CREATE TRIGGER trg_log_asset_position
-AFTER UPDATE OF geom ON assets
+AFTER INSERT OR UPDATE OF geom ON assets
 FOR EACH ROW
 EXECUTE FUNCTION log_asset_position();
 

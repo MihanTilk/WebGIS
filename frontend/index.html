@@ -58,6 +58,7 @@
       <option value="person">People</option>
       <option value="equipment">Equipment</option>
     </select>
+    <button id="fit-btn" style="margin-left:6px;padding:2px 8px;cursor:pointer;">Fit to all</button>
     <div id="status">loading…</div>
 
     <hr>
@@ -75,6 +76,18 @@
       </select>
       <input type="range" id="time-slider" min="0" max="100" value="100">
       <div id="time-label">—</div>
+    </div>
+
+    <hr>
+    <div>
+      <label><input type="checkbox" id="heatmap-toggle"> Density heatmap</label>
+      <select id="heatmap-hours" style="margin-left:4px;">
+        <option value="1">1h</option>
+        <option value="6">6h</option>
+        <option value="24" selected>24h</option>
+        <option value="72">3d</option>
+      </select>
+      <div id="heatmap-status" style="font-size:12px;color:#666;margin-top:2px;"></div>
     </div>
   </div>
 
@@ -125,11 +138,23 @@
       }
     });
 
+    // Density heatmap of historical positions. Recency-decay weight comes
+    // from the backend; OpenLayers' Heatmap does the kernel density.
+    const heatmapSource = new ol.source.Vector();
+    const heatmapLayer  = new ol.layer.Heatmap({
+      source: heatmapSource,
+      blur: 18,
+      radius: 12,
+      weight: f => f.get('weight') ?? 0.5,
+      visible: false,
+    });
+
     const map = new ol.Map({
       target: 'map',
       layers: [
         new ol.layer.Tile({ source: new ol.source.OSM() }),
-        trailLayer,    // under the markers
+        heatmapLayer, // above tiles, below trails/markers so markers stay clickable
+        trailLayer,
         vectorLayer
       ],
       view: new ol.View({
@@ -412,7 +437,51 @@
     filterEl.addEventListener('change', () => {
       if (mode === 'live') refresh();
       else renderSnapshot();
+      refreshHeatmap();
     });
+
+    document.getElementById('fit-btn').addEventListener('click', () => {
+      const extent = vectorSource.getExtent();
+      // Empty source returns [Infinity, Infinity, -Infinity, -Infinity]
+      if (!isFinite(extent[0])) return;
+      map.getView().fit(extent, { padding: [60, 60, 60, 60], maxZoom: 16, duration: 400 });
+    });
+
+    // ------- Heatmap -------
+    const heatmapToggle = document.getElementById('heatmap-toggle');
+    const heatmapHoursEl = document.getElementById('heatmap-hours');
+    const heatmapStatusEl = document.getElementById('heatmap-status');
+
+    async function refreshHeatmap() {
+      if (!heatmapToggle.checked) {
+        heatmapLayer.setVisible(false);
+        heatmapSource.clear();
+        heatmapStatusEl.textContent = '';
+        return;
+      }
+      const params = new URLSearchParams({ hours: heatmapHoursEl.value });
+      if (filterEl.value) params.set('type', filterEl.value);
+      try {
+        const res = await fetch(`${API_ROOT}/heatmap?${params}`, { cache: 'no-store' });
+        const data = await res.json();
+        const features = new ol.format.GeoJSON().readFeatures(data, {
+          featureProjection: 'EPSG:3857'
+        });
+        heatmapSource.clear();
+        heatmapSource.addFeatures(features);
+        heatmapLayer.setVisible(true);
+        const n = data.metadata?.count ?? features.length;
+        const t = data.metadata?.type || 'all';
+        heatmapStatusEl.textContent = `${n} positions · ${t} · last ${heatmapHoursEl.value}h`;
+      } catch (err) {
+        console.error('heatmap fetch failed', err);
+        heatmapStatusEl.textContent = 'heatmap error: ' + err.message;
+      }
+    }
+
+    heatmapToggle.addEventListener('change', refreshHeatmap);
+    heatmapHoursEl.addEventListener('change', refreshHeatmap);
+    setInterval(() => { if (heatmapToggle.checked) refreshHeatmap(); }, 30000);
 
     enterLive();
   </script>

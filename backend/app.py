@@ -189,6 +189,76 @@ def snapshot():
     )
 
 
+@app.route("/api/heatmap", methods=["GET"])
+def heatmap():
+    """Density of historical positions over a time window.
+
+    Returns one Point feature per history row, with a recency-decay weight
+    in [0,1] so the heatmap emphasises recent dwell. Useful for answering
+    'where do people spend the most time?' (Lec 1a: continuous-field view
+    of discrete observations; Lec 1b: dynamic visualization of geo data).
+    """
+    try:
+        hours = max(1, min(int(request.args.get("hours", 24)), 24 * 7))
+        limit = max(1, min(int(request.args.get("limit", 5000)), 20000))
+    except (TypeError, ValueError):
+        return jsonify({"error": "hours and limit must be integers"}), 400
+
+    type_filter = request.args.get("type")
+    if type_filter is not None and type_filter not in VALID_TYPES:
+        return jsonify({"error": f"type must be one of {sorted(VALID_TYPES)}"}), 400
+
+    sql = (
+        "SELECT ST_X(h.geom) AS lon, ST_Y(h.geom) AS lat, "
+        "       EXTRACT(EPOCH FROM (NOW() - h.recorded_at)) AS age_s "
+        "FROM asset_history h "
+        "JOIN assets a ON a.id = h.asset_id "
+        "WHERE h.recorded_at >= NOW() - make_interval(hours => %s)"
+    )
+    params = [hours]
+    if type_filter:
+        sql += " AND a.asset_type = %s"
+        params.append(type_filter)
+    sql += " ORDER BY h.recorded_at DESC LIMIT %s"
+    params.append(limit)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    window_seconds = hours * 3600
+    features = []
+    for r in rows:
+        # Linear decay: a point recorded `window_seconds` ago has weight 0,
+        # a point recorded just now has weight 1. EXTRACT(EPOCH ...) comes
+        # back as Decimal; cast so the float subtraction doesn't TypeError.
+        age_s = float(r["age_s"])
+        weight = max(0.0, 1.0 - (age_s / window_seconds))
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [r["lon"], r["lat"]]},
+                "properties": {"weight": round(weight, 4)},
+            }
+        )
+
+    return jsonify(
+        {
+            "type": "FeatureCollection",
+            "features": features,
+            "metadata": {
+                "hours": hours,
+                "count": len(features),
+                "type": type_filter,
+            },
+        }
+    )
+
+
 @app.route("/api/assets/<int:asset_id>/history", methods=["GET"])
 def get_asset_history(asset_id):
     """Return recent positions for one asset as a GeoJSON LineString trail."""
