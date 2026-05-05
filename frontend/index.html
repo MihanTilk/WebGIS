@@ -187,6 +187,41 @@
       visible: false,
     });
 
+    // Direction arrow for the most recently clicked asset. SVG data URL gives
+    // us a real arrow (head + shaft) instead of a generic triangle / star.
+    function arrowDataUrl(fillColor) {
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 32 40">`
+        + `<path d="M16 2 L28 18 L20 18 L20 38 L12 38 L12 18 L4 18 Z" `
+        + `fill="${fillColor}" stroke="#222" stroke-width="2" stroke-linejoin="round"/>`
+        + `</svg>`;
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+
+    const directionSource = new ol.source.Vector();
+    const directionLayer  = new ol.layer.Vector({
+      source: directionSource,
+      style: feature => {
+        const headingRad = (feature.get('heading_deg') ?? 0) * Math.PI / 180;
+        const movingFast = (feature.get('speed_kmh') ?? 0) >= 5;
+        return new ol.style.Style({
+          image: new ol.style.Icon({
+            src: arrowDataUrl(movingFast ? '#FFD54F' : '#FFFFFF'),
+            size: [32, 40],
+            scale: 0.9,
+            rotation: headingRad,
+            rotateWithView: true,
+            anchor: [0.5, 0.5],
+          })
+        });
+      }
+    });
+
+    // SVG icons load asynchronously — force a redraw once the load fires.
+    directionSource.on('addfeature', () => {
+      setTimeout(() => directionLayer.changed(), 50);
+    });
+
     // Proximity search circle (drawn under markers so it doesn't block clicks).
     const proximitySource = new ol.source.Vector();
     const proximityLayer  = new ol.layer.Vector({
@@ -204,6 +239,7 @@
         heatmapLayer,    // above tiles
         proximityLayer,  // above heatmap
         trailLayer,
+        directionLayer,  // arrow above trail, below markers
         vectorLayer      // markers stay on top so clicks always hit them
       ],
       view: new ol.View({
@@ -238,6 +274,24 @@
       } catch (e) {
         console.error('trail fetch failed', e);
         return 0;
+      }
+    }
+
+    async function showDirectionArrow(assetId, assetCoord) {
+      directionSource.clear();
+      try {
+        const res = await fetch(`${API_BASE}/${assetId}/motion`, { cache: 'no-store' });
+        const data = await res.json();
+        if (data.heading_deg == null) return null;
+        directionSource.addFeature(new ol.Feature({
+          geometry: new ol.geom.Point(assetCoord),
+          heading_deg: data.heading_deg,
+          speed_kmh: data.speed_kmh,
+        }));
+        return data;
+      } catch (e) {
+        console.error('motion fetch failed', e);
+        return null;
       }
     }
 
@@ -288,6 +342,14 @@
       trailLine.textContent = 'Loading trail…';
       popupContent.appendChild(document.createElement('br'));
       popupContent.appendChild(trailLine);
+
+      const motionLine = document.createElement('div');
+      motionLine.id = 'motion-info';
+      motionLine.style.fontSize = '11px';
+      motionLine.style.color = '#666';
+      motionLine.style.marginTop = '2px';
+      motionLine.textContent = 'Loading speed…';
+      popupContent.appendChild(motionLine);
     }
 
     // ---------- Proximity search ----------
@@ -370,6 +432,7 @@
       if (proximityActive) {
         popupEl.style.display = 'none';
         trailSource.clear();
+        directionSource.clear();
         proximityStatus.textContent = 'Click anywhere on the map.';
       } else {
         clearProximity();
@@ -401,18 +464,34 @@
         popup.setPosition(evt.coordinate);
         popupEl.style.display = 'block';
 
-        const count = await showTrail(feature.get('id'), feature.get('asset_type'));
-        const info  = document.getElementById('trail-info');
+        const assetCoord = feature.getGeometry().getCoordinates();
+        const [trailCount, motion] = await Promise.all([
+          showTrail(feature.get('id'), feature.get('asset_type')),
+          showDirectionArrow(feature.get('id'), assetCoord),
+        ]);
+
+        const info = document.getElementById('trail-info');
         if (info) {
-          info.textContent = count >= 2
-            ? `Trail: ${count} positions in last hour`
-            : count === 1
+          info.textContent = trailCount >= 2
+            ? `Trail: ${trailCount} positions in last hour`
+            : trailCount === 1
               ? 'Trail: only origin point so far'
               : 'Trail: no history yet';
+        }
+        const motionEl = document.getElementById('motion-info');
+        if (motionEl) {
+          if (motion && motion.heading_deg != null) {
+            motionEl.textContent =
+              `Speed: ${motion.speed_kmh.toFixed(1)} km/h · `
+              + `Heading: ${motion.heading_deg.toFixed(0)}°`;
+          } else {
+            motionEl.textContent = 'Motion: not enough history';
+          }
         }
       } else {
         popupEl.style.display = 'none';
         trailSource.clear();
+        directionSource.clear();
       }
     });
 

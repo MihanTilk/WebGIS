@@ -341,6 +341,71 @@ def get_asset_history(asset_id):
     return jsonify(response)
 
 
+@app.route("/api/assets/<int:asset_id>/motion", methods=["GET"])
+def get_motion(asset_id):
+    """Latest speed and heading derived from the two most recent history rows.
+
+    - Speed is a *ratio-scale* attribute: distance over time, in metres/second
+      and km/h. Zero means truly motionless.
+    - Heading is a *cyclic-scale* attribute on [0, 360): degrees clockwise
+      from true north (ST_Azimuth convention). 359° is adjacent to 0°.
+    Both classifications come from Lec 1a "attribute scales of measurement".
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                WITH last2 AS (
+                    SELECT recorded_at, geom,
+                           ROW_NUMBER() OVER (ORDER BY recorded_at DESC) AS rn
+                    FROM asset_history
+                    WHERE asset_id = %s
+                    ORDER BY recorded_at DESC
+                    LIMIT 2
+                )
+                SELECT
+                    EXTRACT(EPOCH FROM (p1.recorded_at - p2.recorded_at)) AS dt_s,
+                    ST_Distance(geography(p1.geom), geography(p2.geom)) AS distance_m,
+                    DEGREES(ST_Azimuth(p2.geom, p1.geom)) AS heading_deg,
+                    p1.recorded_at AS at_time
+                FROM last2 p1, last2 p2
+                WHERE p1.rn = 1 AND p2.rn = 2
+                """,
+                (asset_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if row is None or row["dt_s"] is None or float(row["dt_s"]) <= 0:
+        return jsonify(
+            {"asset_id": asset_id, "speed_mps": None, "speed_kmh": None,
+             "heading_deg": None, "sample_seconds": None, "distance_m": None}
+        )
+
+    # EXTRACT(EPOCH ...) returns Decimal; ST_Distance returns float. Coerce both.
+    distance_m = float(row["distance_m"])
+    dt_s = float(row["dt_s"])
+    speed_mps = distance_m / dt_s
+
+    heading = row["heading_deg"]
+    if heading is not None:
+        heading = float(heading) % 360.0
+
+    return jsonify(
+        {
+            "asset_id": asset_id,
+            "speed_mps": round(speed_mps, 2),
+            "speed_kmh": round(speed_mps * 3.6, 2),
+            "heading_deg": round(heading, 1) if heading is not None else None,
+            "sample_seconds": round(dt_s, 1),
+            "distance_m": round(distance_m, 1),
+            "at_time": row["at_time"].isoformat(),
+        }
+    )
+
+
 @app.route("/api/proximity", methods=["GET"])
 def proximity():
     """Find every asset within radius_m metres of (lon, lat).
