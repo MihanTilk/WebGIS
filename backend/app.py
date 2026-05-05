@@ -714,7 +714,9 @@ def list_interactions():
                 aware = datetime.fromisoformat(since)
                 if aware.tzinfo is None:
                     aware = aware.replace(tzinfo=timezone.utc)
-            parsed_since = aware.astimezone().replace(tzinfo=None)
+            # Compare naive-UTC against the TIMESTAMP-without-tz column —
+            # see snapshot() above for the reasoning.
+            parsed_since = aware.astimezone(timezone.utc).replace(tzinfo=None)
         except ValueError:
             return jsonify({"error": "'since' must be a valid ISO timestamp"}), 400
 
