@@ -102,6 +102,27 @@
       white-space: pre-line;
     }
 
+    /* Compass control — rotates with the map view; click to reset to north.
+       Default corner is bottom-right on desktop; on mobile we move it to the
+       free top-left because the interactions panel claims the bottom edge. */
+    .compass-control {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      z-index: 10;
+      width: 44px;
+      height: 44px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+      cursor: pointer;
+      padding: 2px;
+      box-sizing: border-box;
+      user-select: none;
+    }
+    .compass-control svg { display: block; transition: transform 0.1s linear; }
+    .compass-control:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+
     /* Collapse button on the controls panel — only visible on small screens.
        On desktop it stays hidden so layout is unchanged. */
     #controls-toggle {
@@ -166,6 +187,14 @@
       /* Legend lives in the popup info already — hide the corner widget so
          it doesn't fight the interactions panel for the bottom-left. */
       .legend { display: none; }
+
+      /* Move compass to the free top-left so it doesn't sit on the bottom
+         interactions panel. */
+      .compass-control {
+        top: 8px; left: 8px;
+        bottom: auto; right: auto;
+        width: 38px; height: 38px;
+      }
 
       /* Popup must not overflow a 360 px screen. */
       .ol-popup {
@@ -249,6 +278,16 @@
     <div class="row"><span class="dot" style="background:#1976d2"></span>Vehicle</div>
     <div class="row"><span class="dot" style="background:#e53935"></span>Person</div>
     <div class="row"><span class="dot" style="background:#43a047"></span>Equipment</div>
+  </div>
+
+  <div id="compass" class="compass-control" title="Click to reset rotation to north">
+    <svg viewBox="0 0 40 40" width="100%" height="100%" aria-hidden="true">
+      <circle cx="20" cy="20" r="18" fill="#fff" stroke="#666" stroke-width="1.5"/>
+      <polygon points="20,5 24,20 20,17 16,20" fill="#e53935"/>
+      <polygon points="20,35 24,20 20,23 16,20" fill="#888"/>
+      <text x="20" y="13" font-size="7" text-anchor="middle"
+            fill="#222" font-weight="bold" font-family="Arial, sans-serif">N</text>
+    </svg>
   </div>
 
   <div id="popup" class="ol-popup" style="display:none;">
@@ -351,12 +390,27 @@
 
     // Density heatmap of historical positions. Recency-decay weight comes
     // from the backend; OpenLayers' Heatmap does the kernel density.
+    // Per-point weight is intentionally small (~10% of the backend value)
+    // so density EMERGES from overlap rather than each isolated point
+    // saturating the gradient on its own. Blur and radius adapt to zoom
+    // level so the visualization reads correctly whether you're looking
+    // at the whole island or zoomed into a single city.
     const heatmapSource = new ol.source.Vector();
     const heatmapLayer  = new ol.layer.Heatmap({
       source: heatmapSource,
-      blur: 18,
-      radius: 12,
-      weight: f => f.get('weight') ?? 0.5,
+      blur: 22,
+      radius: 6,
+      // Smooth gradient with a transparent low end so empty areas stay
+      // clear instead of glowing red around isolated points.
+      gradient: [
+        'rgba(0,0,255,0)',     // 0.0 transparent
+        'rgba(0,0,255,0.45)',  // 0.2 blue
+        'rgba(0,255,255,0.65)',// 0.4 cyan
+        'rgba(0,255,0,0.80)',  // 0.6 green
+        'rgba(255,255,0,0.90)',// 0.8 yellow
+        'rgba(255,0,0,1.0)',   // 1.0 red
+      ],
+      weight: f => Math.min(1, (f.get('weight') ?? 0.5) * 0.10),
       visible: false,
     });
 
@@ -1239,6 +1293,22 @@
 
     refreshInteractions();
     setInterval(refreshInteractions, 5000);
+
+    // ---------- Compass ----------
+    // Pinch-rotate (touch) and Shift-Alt-drag (desktop) rotate the map view;
+    // the compass SVG counter-rotates to keep "N" pointing at world-north,
+    // and clicking it animates the view back to rotation = 0.
+    const compassEl = document.getElementById('compass');
+    const compassSvg = compassEl.querySelector('svg');
+    function updateCompass() {
+      const rot = map.getView().getRotation() || 0;
+      compassSvg.style.transform = `rotate(${-rot}rad)`;
+    }
+    map.getView().on('change:rotation', updateCompass);
+    updateCompass();
+    compassEl.addEventListener('click', () => {
+      map.getView().animate({ rotation: 0, duration: 350 });
+    });
 
     // ---------- Mobile responsive wiring ----------
     const controlsEl = document.getElementById('controls');
