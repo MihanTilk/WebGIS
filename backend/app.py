@@ -366,6 +366,11 @@ def get_motion(asset_id):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # Confirm the asset exists first so we can distinguish 404
+            # (no such asset) from 200-with-nulls (asset exists, not enough history).
+            cur.execute("SELECT 1 FROM assets WHERE id = %s", (asset_id,))
+            if cur.fetchone() is None:
+                return jsonify({"error": "Not found"}), 404
             cur.execute(
                 """
                 WITH last2 AS (
@@ -390,6 +395,8 @@ def get_motion(asset_id):
     finally:
         conn.close()
 
+    # Asset exists but has fewer than 2 history rows: 200 with nulls is still
+    # the right response (the caller asked for motion, motion is just unknown).
     if row is None or row["dt_s"] is None or float(row["dt_s"]) <= 0:
         return jsonify(
             {"asset_id": asset_id, "speed_mps": None, "speed_kmh": None,

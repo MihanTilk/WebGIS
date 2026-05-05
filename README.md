@@ -33,7 +33,7 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 ```
 .
 ├── backend/
-│   ├── app.py             # Flask REST API (14 endpoints)
+│   ├── app.py             # Flask REST API (15 route-method handlers)
 │   ├── simulator.py       # Periodic location updater + auto-spawn
 │   ├── seed_assets.py     # One-shot bulk loader (POSTs N assets)
 │   ├── smoke_test.ps1     # PowerShell smoke test for every endpoint
