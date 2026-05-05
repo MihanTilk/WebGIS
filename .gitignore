@@ -2,6 +2,7 @@
 WebGISApplication.pdf
 *.docx
 ~$*.docx
+Slides/
 
 # Secrets
 .env

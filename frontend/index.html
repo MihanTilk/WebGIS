@@ -17,6 +17,12 @@
     #controls label { margin-right: 8px; }
     #status { margin-top: 6px; color: #666; font-size: 12px; }
 
+    #controls hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
+    #playback-controls { display: none; }
+    #playback-controls #time-slider { width: 240px; margin-top: 4px; display: block; }
+    #playback-controls #time-label { font-size: 12px; color: #444; margin-top: 4px; }
+    #playback-controls button { padding: 2px 10px; cursor: pointer; }
+
     .ol-popup {
       position: absolute; background: #fff; padding: 10px 14px;
       border: 1px solid #ccc; border-radius: 8px;
@@ -53,6 +59,23 @@
       <option value="equipment">Equipment</option>
     </select>
     <div id="status">loading…</div>
+
+    <hr>
+    <div>
+      <label><input type="radio" name="mode" value="live" checked> Live</label>
+      <label><input type="radio" name="mode" value="playback"> Playback</label>
+    </div>
+    <div id="playback-controls">
+      <button id="play-btn">▶ Play</button>
+      <label for="speed" style="margin-left:6px;">Speed:</label>
+      <select id="speed">
+        <option value="60">1×</option>
+        <option value="300" selected>5×</option>
+        <option value="1800">30×</option>
+      </select>
+      <input type="range" id="time-slider" min="0" max="100" value="100">
+      <div id="time-label">—</div>
+    </div>
   </div>
 
   <div class="legend">
@@ -69,8 +92,10 @@
   <script src="https://unpkg.com/ol@7.5.2/dist/ol.js"
           onerror="document.getElementById('status').textContent='Failed to load OpenLayers from CDN'"></script>
   <script>
-    const API_BASE = "http://localhost:5000/api/assets";
+    const API_ROOT = "http://localhost:5000/api";
+    const API_BASE = `${API_ROOT}/assets`;
     const REFRESH_MS = 5000;
+    const PLAYBACK_TICK_MS = 1000;  // wall-clock cadence while playing
 
     const COLORS = { vehicle: '#1976d2', person: '#e53935', equipment: '#43a047' };
 
@@ -146,6 +171,7 @@
       // Build with DOM nodes (textContent is XSS-safe).
       const seen = feature.get('last_seen');
       popupContent.replaceChildren();
+
       const name = document.createElement('strong');
       name.textContent = feature.get('name') ?? '';
       const type = document.createElement('em');
@@ -154,15 +180,40 @@
       const seenLine  = document.createTextNode(
         'Last seen: ' + (seen ? new Date(seen).toLocaleString() : '—')
       );
-      const trailLine = document.createElement('span');
-      trailLine.id = 'trail-info';
-      trailLine.textContent = 'Loading trail…';
 
       popupContent.append(name, document.createElement('br'),
                           type, document.createElement('br'),
                           idLine, document.createElement('br'),
-                          seenLine, document.createElement('br'),
-                          trailLine);
+                          seenLine, document.createElement('br'));
+
+      // WGS84 lat/lon (EPSG:4326)
+      const lat = feature.get('lat');
+      const lon = feature.get('lon');
+      if (lat != null && lon != null) {
+        const wgs = document.createElement('div');
+        wgs.style.fontSize = '12px';
+        wgs.style.color = '#333';
+        wgs.textContent = `WGS84: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        popupContent.appendChild(wgs);
+      }
+
+      // Sri Lanka Kandawala Grid (EPSG:5234) — TM, locally conformal.
+      const e = feature.get('easting');
+      const n = feature.get('northing');
+      if (e != null && n != null) {
+        const slg = document.createElement('div');
+        slg.style.fontSize = '12px';
+        slg.style.color = '#555';
+        slg.title = 'EPSG:5234 — Sri Lanka Kandawala Grid (Transverse Mercator)';
+        slg.textContent = `SLG: E ${e.toFixed(1)}, N ${n.toFixed(1)} m`;
+        popupContent.appendChild(slg);
+      }
+
+      const trailLine = document.createElement('span');
+      trailLine.id = 'trail-info';
+      trailLine.textContent = 'Loading trail…';
+      popupContent.appendChild(document.createElement('br'));
+      popupContent.appendChild(trailLine);
     }
 
     map.on('singleclick', async evt => {
@@ -213,9 +264,157 @@
       }
     }
 
-    filterEl.addEventListener('change', refresh);
-    refresh();
-    setInterval(refresh, REFRESH_MS);
+    // ------- Playback state -------
+    const playbackEl = document.getElementById('playback-controls');
+    const sliderEl   = document.getElementById('time-slider');
+    const timeLabel  = document.getElementById('time-label');
+    const playBtn    = document.getElementById('play-btn');
+    const speedEl    = document.getElementById('speed');
+    const modeRadios = document.querySelectorAll('input[name="mode"]');
+
+    let mode = 'live';                  // 'live' | 'playback'
+    let liveInterval = null;
+    let playInterval = null;
+    let playing = false;
+    let range = { earliest: null, latest: null };  // ms epoch
+    let snapshotInflight = null;
+
+    async function fetchRange() {
+      const res = await fetch(`${API_ROOT}/history/range`, { cache: 'no-store' });
+      const data = await res.json();
+      const earliest = data.earliest ? new Date(data.earliest).getTime() : null;
+      const latest   = data.latest   ? new Date(data.latest).getTime()   : null;
+      return { earliest, latest };
+    }
+
+    async function fetchSnapshot(atMs) {
+      const at = new Date(atMs).toISOString();
+      const type = filterEl.value;
+      const params = new URLSearchParams({ at });
+      if (type) params.set('type', type);
+      const res = await fetch(`${API_ROOT}/snapshot?${params}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`snapshot ${res.status}`);
+      return res.json();
+    }
+
+    function sliderToTime() {
+      if (range.earliest == null || range.latest == null) return null;
+      const span = range.latest - range.earliest;
+      return range.earliest + (span * Number(sliderEl.value)) / Number(sliderEl.max);
+    }
+
+    function timeToSlider(tMs) {
+      if (range.earliest == null || range.latest == null) return 0;
+      const span = range.latest - range.earliest;
+      if (span <= 0) return Number(sliderEl.max);
+      const v = ((tMs - range.earliest) / span) * Number(sliderEl.max);
+      return Math.max(0, Math.min(Number(sliderEl.max), v));
+    }
+
+    async function renderSnapshot() {
+      const t = sliderToTime();
+      if (t == null) return;
+      timeLabel.textContent = new Date(t).toLocaleString();
+      // De-dupe overlapping requests when scrubbing fast.
+      const ticket = (snapshotInflight = Symbol('snap'));
+      try {
+        const data = await fetchSnapshot(t);
+        if (ticket !== snapshotInflight) return;
+        const features = new ol.format.GeoJSON().readFeatures(data, {
+          featureProjection: 'EPSG:3857'
+        });
+        vectorSource.clear();
+        vectorSource.addFeatures(features);
+        statusEl.textContent =
+          `${features.length} asset${features.length === 1 ? '' : 's'} @ playback`;
+      } catch (err) {
+        if (ticket !== snapshotInflight) return;
+        console.error('snapshot failed', err);
+        statusEl.textContent = 'API error: ' + err.message;
+      }
+    }
+
+    function stopPlay() {
+      playing = false;
+      playBtn.textContent = '▶ Play';
+      if (playInterval) { clearInterval(playInterval); playInterval = null; }
+    }
+
+    function startPlay() {
+      if (range.earliest == null || range.latest == null) return;
+      playing = true;
+      playBtn.textContent = '❚❚ Pause';
+      const stepSeconds = Number(speedEl.value);  // sim seconds per wall second
+      playInterval = setInterval(() => {
+        const t = sliderToTime();
+        if (t == null) return stopPlay();
+        const next = t + stepSeconds * 1000;
+        if (next >= range.latest) {
+          sliderEl.value = sliderEl.max;
+          renderSnapshot();
+          stopPlay();
+          return;
+        }
+        sliderEl.value = timeToSlider(next);
+        renderSnapshot();
+      }, PLAYBACK_TICK_MS);
+    }
+
+    async function enterPlayback() {
+      mode = 'playback';
+      if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+      trailSource.clear();
+      popupEl.style.display = 'none';
+      playbackEl.style.display = 'block';
+      try {
+        range = await fetchRange();
+      } catch (err) {
+        statusEl.textContent = 'history range failed: ' + err.message;
+        return;
+      }
+      if (range.earliest == null) {
+        statusEl.textContent = 'no history yet — let the simulator run first';
+        return;
+      }
+      sliderEl.value = sliderEl.max;  // start at "latest"
+      await renderSnapshot();
+    }
+
+    function enterLive() {
+      mode = 'live';
+      stopPlay();
+      playbackEl.style.display = 'none';
+      refresh();
+      liveInterval = setInterval(refresh, REFRESH_MS);
+    }
+
+    modeRadios.forEach(r => r.addEventListener('change', e => {
+      if (e.target.value === 'playback') enterPlayback();
+      else enterLive();
+    }));
+
+    sliderEl.addEventListener('input', () => {
+      if (playing) stopPlay();
+      renderSnapshot();
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (playing) { stopPlay(); return; }
+      // If we're at the end, rewind to start before playing.
+      if (Number(sliderEl.value) >= Number(sliderEl.max)) sliderEl.value = 0;
+      startPlay();
+    });
+
+    speedEl.addEventListener('change', () => {
+      if (playing) { stopPlay(); startPlay(); }
+    });
+
+    filterEl.addEventListener('change', () => {
+      if (mode === 'live') refresh();
+      else renderSnapshot();
+    });
+
+    enterLive();
   </script>
 </body>
 </html>
