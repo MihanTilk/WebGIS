@@ -31,17 +31,25 @@ WITH cities(city, lon, lat) AS (VALUES
     ('Kegalle',      80.346,        7.251)
 ),
 plan AS (
+    -- Pull all four randoms ONCE per row. Stacking independent random()
+    -- calls inside CASE/WHEN compounds probabilities (the second test only
+    -- runs for rows that failed the first), so 60/25/15 would actually have
+    -- come out as 60/34/6.
     SELECT
         c.city, c.lon, c.lat, gs AS seq,
-        -- ~60% person, ~25% vehicle, ~15% equipment
-        CASE
-            WHEN random() < 0.60 THEN 'person'
-            WHEN random() < 0.85 THEN 'vehicle'
-            ELSE 'equipment'
-        END AS asset_type,
+        random() AS r_type,
         random() AS r_lon,
         random() AS r_lat
     FROM cities c, generate_series(1, 6) gs           -- 6 assets per city → 120 total
+),
+typed AS (
+    SELECT *,
+        CASE
+            WHEN r_type < 0.60 THEN 'person'      -- 60%
+            WHEN r_type < 0.85 THEN 'vehicle'     -- 25%
+            ELSE                     'equipment'  -- 15%
+        END AS asset_type
+    FROM plan
 ),
 named AS (
     SELECT
@@ -51,7 +59,7 @@ named AS (
             WHEN 'vehicle'   THEN (ARRAY['Truck','Van','Lorry','Pickup','Bus','Bike'])[1 + (random()*6)::int % 6]
             ELSE                  (ARRAY['Generator','Drone','Crane','Excavator','Compactor','Beacon'])[1 + (random()*6)::int % 6]
         END AS base_name
-    FROM plan
+    FROM typed
 )
 INSERT INTO assets (name, asset_type, geom)
 SELECT

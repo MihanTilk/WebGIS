@@ -63,16 +63,18 @@ def main():
         print("Invalid --types", file=sys.stderr); sys.exit(1)
 
     if args.island:
-        position_fn = lambda: (
-            (lambda c: (c[1] + random.uniform(-args.city_jitter, args.city_jitter),
-                        c[2] + random.uniform(-args.city_jitter, args.city_jitter)))
-            (random.choice(SRI_LANKA_CITIES))
-        )
+        def position_fn():
+            _, lon, lat = random.choice(SRI_LANKA_CITIES)
+            return (
+                lon + random.uniform(-args.city_jitter, args.city_jitter),
+                lat + random.uniform(-args.city_jitter, args.city_jitter),
+            )
     else:
-        position_fn = lambda: (
-            cx + random.uniform(-args.radius, args.radius),
-            cy + random.uniform(-args.radius, args.radius),
-        )
+        def position_fn():
+            return (
+                cx + random.uniform(-args.radius, args.radius),
+                cy + random.uniform(-args.radius, args.radius),
+            )
 
     counters = {}
     created = 0

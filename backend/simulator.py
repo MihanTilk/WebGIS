@@ -150,10 +150,12 @@ def main():
         sys.exit(1)
 
     if args.island:
-        position_fn = lambda: random_city_position(args.city_jitter)
+        def position_fn():
+            return random_city_position(args.city_jitter)
         spawn_desc = f"island-wide ({len(SRI_LANKA_CITIES)} cities, ±{args.city_jitter}°)"
     else:
-        position_fn = lambda: random_position((cx, cy), args.spawn_radius)
+        def position_fn():
+            return random_position((cx, cy), args.spawn_radius)
         spawn_desc = f"around {cx:.3f},{cy:.3f} (±{args.spawn_radius}°)"
 
     counters = {}

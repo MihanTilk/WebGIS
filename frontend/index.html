@@ -619,6 +619,7 @@
       mode = 'playback';
       if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
       trailSource.clear();
+      directionSource.clear();
       popupEl.style.display = 'none';
       playbackEl.style.display = 'block';
       try {
@@ -665,6 +666,11 @@
     });
 
     filterEl.addEventListener('change', () => {
+      // Filter scope changed: a clicked-asset's arrow / trail / popup may
+      // belong to an asset no longer shown. Clear them.
+      popupEl.style.display = 'none';
+      trailSource.clear();
+      directionSource.clear();
       if (mode === 'live') refresh();
       else renderSnapshot();
       refreshHeatmap();
