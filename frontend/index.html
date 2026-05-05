@@ -101,12 +101,97 @@
       color: #333;
       white-space: pre-line;
     }
+
+    /* Collapse button on the controls panel — only visible on small screens.
+       On desktop it stays hidden so layout is unchanged. */
+    #controls-toggle {
+      display: none;
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 1px 8px;
+      font-size: 13px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+    #controls-header {
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    #controls-header strong { font-size: 13px; }
+
+    /* ----- Mobile / narrow viewport ----- */
+    @media (max-width: 700px) {
+      #controls {
+        top: 8px;
+        right: 8px;
+        left: 8px;        /* span the width when expanded */
+        max-height: calc(100vh - 16px);
+        overflow-y: auto;
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+      /* When the panel is minimised, only the header (toggle pill) shows. */
+      #controls.minimised {
+        left: auto;
+        max-height: none;
+        overflow: visible;
+        padding: 4px 8px;
+      }
+      #controls.minimised > :not(#controls-header) { display: none; }
+      #controls-header { display: flex; }
+      #controls-toggle { display: inline-block; }
+
+      /* Compact controls so they stack cleanly when expanded. */
+      #controls hr { margin: 6px 0; }
+      #controls label { margin-right: 4px; }
+      #playback-controls #time-slider { width: 100%; box-sizing: border-box; }
+      #proximity-radius { width: calc(100% - 90px) !important; }
+
+      /* Interactions panel: anchor at bottom, span screen, start collapsed. */
+      #interactions-panel {
+        top: auto;
+        bottom: 8px;
+        left: 8px;
+        right: 8px;
+        width: auto;
+        max-height: 45vh;
+      }
+      #interactions-panel.collapsed { max-height: none; }
+      .kind-chip { font-size: 10px; padding: 2px 6px; }
+
+      /* Legend lives in the popup info already — hide the corner widget so
+         it doesn't fight the interactions panel for the bottom-left. */
+      .legend { display: none; }
+
+      /* Popup must not overflow a 360 px screen. */
+      .ol-popup {
+        min-width: 0;
+        max-width: calc(100vw - 24px);
+        left: -50%;
+        transform: translateX(50%);
+      }
+    }
+
+    /* Extra-small phones — squeeze padding & font further. */
+    @media (max-width: 380px) {
+      #controls { font-size: 12px; padding: 6px 10px; }
+      #interactions-panel { font-size: 12px; }
+      #interactions-list li { padding: 6px 10px; }
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
   <div id="controls">
+    <div id="controls-header">
+      <strong>Controls</strong>
+      <button id="controls-toggle" aria-label="Toggle controls panel">≡</button>
+    </div>
     <label for="filter">Show:</label>
     <select id="filter">
       <option value="">All</option>
@@ -1154,6 +1239,34 @@
 
     refreshInteractions();
     setInterval(refreshInteractions, 5000);
+
+    // ---------- Mobile responsive wiring ----------
+    const controlsEl = document.getElementById('controls');
+    const controlsToggle = document.getElementById('controls-toggle');
+    const mobileQuery = window.matchMedia('(max-width: 700px)');
+
+    function setControlsMinimised(min) {
+      controlsEl.classList.toggle('minimised', min);
+    }
+    controlsToggle.addEventListener('click', evt => {
+      evt.stopPropagation();
+      setControlsMinimised(!controlsEl.classList.contains('minimised'));
+    });
+
+    function applyResponsiveDefaults(isMobile) {
+      // Start collapsed on small screens; leave the user's choice alone on
+      // bigger ones. Re-applied on viewport resize so rotating the phone
+      // or resizing the window does the right thing.
+      if (isMobile) {
+        setControlsMinimised(true);
+        if (!panelCollapsed) ixHeader.click();   // collapse interactions panel
+      } else {
+        setControlsMinimised(false);
+        if (panelCollapsed) ixHeader.click();    // reopen on desktop
+      }
+    }
+    applyResponsiveDefaults(mobileQuery.matches);
+    mobileQuery.addEventListener('change', e => applyResponsiveDefaults(e.matches));
 
     enterLive();
   </script>
