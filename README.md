@@ -33,10 +33,12 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 ```
 .
 ├── backend/
-│   ├── app.py             # Flask REST API (15 route-method handlers)
+│   ├── app.py             # Flask REST API (16 route-method handlers)
 │   ├── simulator.py       # Periodic location updater + auto-spawn
 │   ├── seed_assets.py     # One-shot bulk loader (POSTs N assets)
+│   ├── constants.py       # Shared name pool + Sri Lankan city list
 │   ├── smoke_test.ps1     # PowerShell smoke test for every endpoint
+│   ├── Procfile           # Gunicorn entrypoint for production
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
@@ -47,15 +49,25 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 │   ├── 03_history.sql           # asset_history + INSERT/UPDATE trigger
 │   ├── 04_clustered_seed.sql    # 120 clustered assets across 20 SL cities
 │   └── 05_interactions.sql      # interactions table + view for typed encounters
-└── docs/
-    └── screenshots/
+├── docs/
+│   └── screenshots/
+├── render.yaml            # Render Blueprint (DB + API + static frontend)
+└── create_report.py       # Generates the assignment writeup .docx
 ```
 
 ## Quick start (Windows)
 
+### 0. Prerequisites
+
+- **PostgreSQL 18** with the **PostGIS 3.x** extension. The commands below assume it is listening on port `5433` (Postgres' default-installer second-instance port). If yours is on `5432`, swap `-p 5433` for `-p 5432` everywhere.
+- **Python 3.11+** on `PATH`.
+- **PowerShell** (the commands use PS syntax — `Activate.ps1`, `Copy-Item`).
+
+If `psql` is not on `PATH`, either add `C:\Program Files\PostgreSQL\18\bin` to your `PATH` or call it by full path.
+
 ### 1. Database
 
-Install PostgreSQL 18 with PostGIS, then create and seed:
+Create and seed the database (run from the repo root):
 
 ```powershell
 psql -U postgres -p 5433 -c "CREATE DATABASE asset_tracking;"
@@ -94,7 +106,15 @@ cd frontend
 python -m http.server 8000
 ```
 
-Open http://localhost:8000 in your browser.
+The page is hard-coded to call the **deployed** API (see the `<meta name="api-root">` tag in [frontend/index.html](frontend/index.html#L7)). To point it at your local backend, append a query parameter:
+
+```
+http://localhost:8000/?api_root=http://localhost:5000/api
+```
+
+(Alternatively, edit the meta tag's `content` attribute to `http://localhost:5000/api` for the duration of local dev — but don't commit that change.)
+
+To verify the API is reachable: <http://localhost:5000/api/health> should return `{"ok": true}`.
 
 ### 4. Simulator (shows movement)
 
@@ -115,10 +135,27 @@ python simulator.py --interval 1 --spawn-every 3 --spawn-max 200 --island   # bu
 python seed_assets.py 40 --island                                            # bulk-add 40 assets
 ```
 
+To point the simulator at a deployed API instead of localhost, set `API_BASE`:
+
+```powershell
+$env:API_BASE = "https://asset-tracking-api.onrender.com/api"
+python simulator.py --interval 2
+```
+
+### 5. Smoke test (optional)
+
+With the API running, exercise every endpoint at once:
+
+```powershell
+cd backend
+.\smoke_test.ps1
+```
+
 ## API reference
 
 | Method | Path                                | Description                                                                  |
 |--------|-------------------------------------|------------------------------------------------------------------------------|
+| GET    | `/api/health`                       | Liveness probe. Returns `{"ok": true}` without touching the database.        |
 | GET    | `/api/assets`                       | All assets as GeoJSON. Optional `?type=vehicle\|person\|equipment`.          |
 | GET    | `/api/assets/<id>`                  | Single asset as a GeoJSON Feature.                                           |
 | POST   | `/api/assets`                       | Create a new asset. Body: `{name, asset_type, latitude, longitude}`.         |
@@ -135,6 +172,10 @@ python seed_assets.py 40 --island                                            # b
 | GET    | `/api/interactions/rules`           | The 5 rule definitions (type pairs, distance, min duration, kind).           |
 
 Run `backend\smoke_test.ps1` to exercise every endpoint.
+
+## Deployment
+
+[render.yaml](render.yaml) is a Render Blueprint that provisions a Postgres+PostGIS database, the Flask API (gunicorn via [backend/Procfile](backend/Procfile)), and the static frontend in one click. After the first deploy, manually apply the SQL files (`01_schema.sql`, `03_history.sql`, `04_clustered_seed.sql`, `05_interactions.sql`) against the new DB and update the `api-root` meta tag in `frontend/index.html` to the deployed backend URL. The simulator stays local — point it at the deployed API by setting `API_BASE` (see step 4).
 
 ## Tech stack
 

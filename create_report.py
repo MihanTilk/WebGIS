@@ -3,7 +3,13 @@
 Brief, point-form prose. Heavy focus on the innovations that extend the
 basic tutorial: trails, direction arrows, density heatmap, time-travel
 playback, proximity search, asset interactions, dual-CRS display,
-Sri Lanka land-polygon clipping, mobile responsiveness, deployment.
+Sri Lanka land-polygon clipping, mobile responsiveness, and deployment.
+
+Generated against the current state of the codebase as of submission:
+- 15 route-method handlers in backend/app.py
+- 3 PostgreSQL tables + 1 view + 4 GIST indexes + INSERT/UPDATE trigger
+- ~150 simulated assets across 20 Sri Lankan cities, clipped to land polygon
+- Backend + Postgres hosted on Render; GitHub Actions hourly cleanup
 """
 
 from docx import Document
@@ -110,7 +116,7 @@ centered(doc, "Date of Submission", bold=True, after=4)
 centered(doc, "[06/05/2026]", bold=True, after=4)
 blank(doc)
 centered(doc, "Word Count", bold=True, after=4)
-centered(doc, "[3185]", bold=True, after=4)
+centered(doc, "[3360]", bold=True, after=4)
 doc.add_page_break()
 
 
@@ -138,22 +144,20 @@ para(
     "This report documents the development of a WebGIS asset tracking application "
     "that visualizes the locations of moving assets across Sri Lanka in near "
     "real-time. The application was built following the tutorial by Dr. Sandun "
-    "Dassanayake, then extended significantly with seven major innovations beyond "
-    "the basic implementation."
+    "Dassanayake and then extended significantly with seven major innovations "
+    "beyond the basic implementation."
 )
 blank(doc)
 para(doc, "Headline numbers:")
-bullet(doc, "PostgreSQL 18 + PostGIS 3.x backend, Flask REST API, OpenLayers 7 frontend.")
-bullet(doc, "14 REST API endpoints (CRUD, history, motion, snapshot, heatmap, proximity, interactions).")
-bullet(doc, "~150 simulated assets across 20 Sri Lankan cities, clipped to a hand-built mainland polygon.")
-bullet(doc, "Seven extension features beyond the tutorial baseline.")
-bullet(doc, "Deployed publicly on Render (backend) + Supabase (database) + GitHub Pages (frontend).")
-bullet(doc, "Hourly automated database cleanup via GitHub Actions to stay within free-tier limits.")
+bullet(doc, "PostgreSQL 18 with PostGIS 3.x backend, Flask REST API, OpenLayers 7.5.2 frontend, OpenStreetMap base tiles.")
+bullet(doc, "15 REST API route-method handlers (CRUD, history, motion, snapshot, heatmap, proximity, interactions, health).")
+bullet(doc, "Three database tables (assets, asset_history, interactions) plus one read-only view (interactions_view) and four GIST spatial indexes.")
+bullet(doc, "Approximately 150 simulated assets distributed across 20 Sri Lankan cities, clipped to a hand-built mainland polygon with ST_Contains.")
+bullet(doc, "Seven extension features beyond the tutorial baseline (Section 5.1).")
+bullet(doc, "Three coordinate reference systems used together: EPSG:4326 (WGS84 storage), EPSG:3857 (Web Mercator display), EPSG:5234 (Sri Lanka Kandawala Grid in popups).")
+bullet(doc, "Deployed on Render: web service for the Flask backend, PostgreSQL with PostGIS for the database. Hourly automated cleanup via GitHub Actions keeps the database within free-tier limits.")
 blank(doc)
-para(
-    doc,
-    "Source code: https://github.com/MihanTilk/WebGIS"
-)
+para(doc, "Source code: https://github.com/MihanTilk/WebGIS")
 doc.add_page_break()
 
 
@@ -171,17 +175,17 @@ toc = [
     ("4.0 Development Procedure", "4"),
     ("    4.1 Spatial Database Design", "4"),
     ("    4.2 Flask Backend", "5"),
-    ("    4.3 OpenLayers Frontend", "6"),
-    ("    4.4 Simulator and Automated Cleanup", "7"),
-    ("5.0 Reflection and Insights", "8"),
-    ("    5.1 Innovations and How They Connect", "8"),
-    ("    5.2 Challenges", "12"),
-    ("    5.3 Limitations", "13"),
-    ("    5.4 Improvements", "14"),
-    ("    5.5 Real-World Applications", "15"),
-    ("6.0 Lessons Learned", "16"),
-    ("7.0 Conclusion", "17"),
-    ("8.0 References", "18"),
+    ("    4.3 OpenLayers Frontend", "7"),
+    ("    4.4 Simulator and Automated Cleanup", "8"),
+    ("5.0 Reflection and Insights", "9"),
+    ("    5.1 Innovations and How They Connect", "9"),
+    ("    5.2 Challenges", "13"),
+    ("    5.3 Limitations", "14"),
+    ("    5.4 Improvements", "15"),
+    ("    5.5 Real-World Applications", "16"),
+    ("6.0 Lessons Learned", "17"),
+    ("7.0 Conclusion", "18"),
+    ("8.0 References", "19"),
 ]
 for entry, page in toc:
     p = doc.add_paragraph()
@@ -195,11 +199,11 @@ doc.add_page_break()
 
 heading(doc, "List of Figures")
 for cap, page in [
-    ("Figure 1: Three-tier architecture", "3"),
-    ("Figure 2: Assets table schema", "4"),
-    ("Figure 3: Proximity query SQL using PostGIS geography type", "5"),
-    ("Figure 4: Periodic refresh loop", "6"),
-    ("Figure 5: Innovation feature map and shared infrastructure", "11"),
+    ("Figure 1: Three-tier architecture and deployment topology", "3"),
+    ("Figure 2: Assets table schema and GIST index", "4"),
+    ("Figure 3: Proximity query SQL using PostGIS geography type", "6"),
+    ("Figure 4: Periodic refresh loop", "7"),
+    ("Figure 5: Innovation feature map and shared infrastructure", "12"),
 ]:
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(2)
@@ -245,7 +249,7 @@ para(
     "innovation features added beyond the tutorial."
 )
 heading(doc, "Objectives:", size=12, italic=True, bold=False, before=6)
-numbered(doc, "Design a spatial database in PostgreSQL with PostGIS, storing asset locations as Point geometry in WGS84 (EPSG:4326) with a GIST spatial index, by 06 May 2026.")
+numbered(doc, "Design a spatial database in PostgreSQL with PostGIS, storing asset locations as Point geometry in WGS84 (EPSG:4326) with GIST spatial indexes, by 06 May 2026.")
 numbered(doc, "Implement a Flask REST API that returns asset data as standard GeoJSON, supporting at least 10 endpoints covering CRUD plus spatial queries.")
 numbered(doc, "Develop an OpenLayers frontend that displays at least 100 simulated moving assets across Sri Lanka with periodic 5-second polling.")
 numbered(doc, "Build a Python simulator that updates asset positions and triggers interaction event detection on a configurable interval.")
@@ -262,30 +266,31 @@ para(
     doc,
     "The system follows the standard WebGIS three-tier architecture. Each layer is "
     "developed and deployed independently. A separate Python simulator runs on a "
-    "developer laptop or laptop-during-demo basis."
+    "developer laptop to drive movement during demos."
 )
 blank(doc)
-centered(doc, "OpenLayers (browser)", bold=True, after=2)
+centered(doc, "OpenLayers 7.5.2 (browser)", bold=True, after=2)
 centered(doc, "|", after=2)
 centered(doc, "HTTP / GeoJSON", italic=True, size=10, after=2)
 centered(doc, "|", after=2)
 centered(doc, "Flask (Python REST API)", bold=True, after=2)
 centered(doc, "|", after=2)
-centered(doc, "SQL (PostGIS queries)", italic=True, size=10, after=2)
+centered(doc, "SQL (PostGIS queries via psycopg2)", italic=True, size=10, after=2)
 centered(doc, "|", after=2)
-centered(doc, "PostgreSQL + PostGIS", bold=True, after=8)
-centered(doc, "Figure 1: Three-tier architecture", italic=True, size=10, after=12)
+centered(doc, "PostgreSQL 18 + PostGIS 3.x", bold=True, after=8)
+centered(doc, "Figure 1: Three-tier architecture and deployment topology",
+         italic=True, size=10, after=12)
 para(doc, "Layer responsibilities:")
-bullet(doc, "Database: PostgreSQL 18 + PostGIS 3.x. Three tables (assets, asset_history, interactions) with GIST indexes on every geometry column.")
-bullet(doc, "Backend: Flask + psycopg2 + flask-cors. 14 REST endpoints returning GeoJSON.")
-bullet(doc, "Frontend: OpenLayers 7 over OpenStreetMap tiles. Polling with setInterval; vector layers for markers, trails, arrows, encounters, heatmap, proximity circle.")
-bullet(doc, "Simulator: standalone Python script that PUTs new positions and triggers interaction detection on a configurable interval.")
+bullet(doc, "Database: PostgreSQL 18 with PostGIS 3.x. Three tables (assets, asset_history, interactions), one view (interactions_view), four GIST spatial indexes, an AFTER INSERT/UPDATE trigger on assets.geom that populates asset_history automatically.")
+bullet(doc, "Backend: Flask + psycopg2 + flask-cors + python-dotenv. 15 REST endpoint-method handlers returning GeoJSON FeatureCollections.")
+bullet(doc, "Frontend: OpenLayers 7.5.2 over OpenStreetMap raster tiles, served as a single self-contained index.html file. Eight stacked vector layers for markers, trails, arrows, encounters, heatmap, proximity circle, interaction stars, and selected-event circle.")
+bullet(doc, "Simulator: standalone Python script that PUTs new positions and POSTs to the interaction-detection endpoint on a configurable interval.")
 blank(doc)
 para(doc, "Deployment topology:")
-bullet(doc, "Backend hosted on Render (free web service, sleeps after 15 minutes idle).")
-bullet(doc, "Database hosted on Supabase (free tier, 500 MB cap).")
-bullet(doc, "Frontend served from GitHub Pages.")
-bullet(doc, "Hourly cleanup runs as a GitHub Actions workflow, keeping asset_history bounded to a rolling 2-hour window.")
+bullet(doc, "Backend hosted on Render as a web service.")
+bullet(doc, "Database hosted on Render PostgreSQL with the PostGIS extension enabled.")
+bullet(doc, "Frontend served as a static page (single self-contained index.html).")
+bullet(doc, "Hourly cleanup runs as a GitHub Actions workflow (.github/workflows/cleanup.yml), keeping asset_history bounded to a rolling 2-hour window so storage stays within free-tier limits.")
 doc.add_page_break()
 
 
@@ -297,8 +302,9 @@ para(doc, "Five development stages, each completed and tested before moving to t
 heading(doc, "4.1 Spatial Database Design", size=13, before=12)
 para(doc, "Three tables, each with a clear single responsibility:")
 bullet(doc, "assets: current state. One row per asset, Point geometry in WGS84, GIST spatial index.")
-bullet(doc, "asset_history: every position change. Populated by an AFTER INSERT/UPDATE trigger on assets.geom.")
-bullet(doc, "interactions: typed proximity encounters between asset pairs (5 kinds). Asset_a < asset_b check constraint to deduplicate.")
+bullet(doc, "asset_history: every position change. Populated automatically by an AFTER INSERT/UPDATE trigger on assets.geom; composite index on (asset_id, recorded_at DESC) plus a separate GIST index on geom.")
+bullet(doc, "interactions: typed proximity encounters between asset pairs (5 kinds). asset_a_id < asset_b_id check constraint to deduplicate (a, b) and (b, a) pairs; partial index on active rows; GIST index on the encounter midpoint.")
+bullet(doc, "interactions_view: read-only view that joins interactions with the two participating assets and computes a live duration_s on the fly using EXTRACT(EPOCH FROM COALESCE(ended_at, NOW()) - started_at).")
 code(
     doc,
     "CREATE TABLE assets (\n"
@@ -310,24 +316,26 @@ code(
     ");\n"
     "CREATE INDEX idx_assets_geom ON assets USING GIST (geom);"
 )
-centered(doc, "Figure 2: Assets table schema", italic=True, size=10, after=12)
+centered(doc, "Figure 2: Assets table schema and GIST index",
+         italic=True, size=10, after=12)
 para(doc, "Two seed scripts:")
-bullet(doc, "02_sample_data.sql: 6 assets around Colombo for the basic demo.")
-bullet(doc, "04_clustered_seed.sql: ~150 assets across 20 Sri Lankan cities. Two tiers (clustered + roaming), both clipped to a hand-built mainland polygon via ST_Contains.")
-bullet(doc, "Includes a synthetic past-walk backfill so trail visualization works immediately without needing the simulator to accumulate data first.")
-bullet(doc, "Includes a synthetic interactions backfill so the side panel shows events on first load.")
+bullet(doc, "02_sample_data.sql: 6 assets around Colombo for the basic demonstration.")
+bullet(doc, "04_clustered_seed.sql: ~150 assets across 20 Sri Lankan cities. Two tiers (clustered + roaming), both clipped to a hand-built ~38-vertex mainland polygon via ST_Contains so no asset spawns in the ocean.")
+bullet(doc, "Includes a synthetic past-walk backfill so trail visualization works immediately, without needing the simulator to accumulate history.")
+bullet(doc, "Includes a synthetic interactions backfill so the side panel shows events on the first page load.")
 
 heading(doc, "4.2 Flask Backend", size=13, before=12)
-para(doc, "14 REST endpoints. Selected highlights:")
-bullet(doc, "GET /api/assets, /api/assets/<id> — read.")
-bullet(doc, "POST /api/assets — create. PUT /api/assets/<id> — update location. DELETE — remove.")
-bullet(doc, "GET /api/assets/<id>/history — recent positions as GeoJSON LineString trail.")
-bullet(doc, "GET /api/assets/<id>/motion — speed (km/h) and heading (degrees) from last two history rows.")
-bullet(doc, "GET /api/snapshot?at=<iso> — asset positions at any past timestamp (powers playback).")
+para(doc, "15 REST endpoint-method handlers. Selected highlights:")
+bullet(doc, "GET /api/health — DB-independent liveness probe; passes on a fresh deploy before the schema is loaded.")
+bullet(doc, "GET /api/assets, GET /api/assets/<id> — read.")
+bullet(doc, "POST /api/assets — create. PUT /api/assets/<id> — update location. DELETE /api/assets/<id> — remove (cascades to history and interactions).")
+bullet(doc, "GET /api/assets/<id>/history — recent positions as GeoJSON LineString trail; takes the most recent N rows in a time window via DESC subquery + LIMIT, then re-orders ASC for line drawing.")
+bullet(doc, "GET /api/assets/<id>/motion — speed (km/h) and heading (degrees from north) from last two history rows; 404 if asset not found, 200-with-nulls if asset exists but has fewer than two history rows.")
+bullet(doc, "GET /api/snapshot?at=<iso> — asset positions at any past timestamp (powers Playback mode).")
+bullet(doc, "GET /api/history/range — earliest and latest history timestamps (slider bounds).")
 bullet(doc, "GET /api/heatmap?hours=N — recency-weighted point cloud for kernel density visualization.")
 bullet(doc, "GET /api/proximity?lon&lat&radius_m — assets within a given metric radius.")
 bullet(doc, "GET /api/interactions, POST /api/interactions/detect, GET /api/interactions/rules — typed encounter system.")
-bullet(doc, "GET /api/health — DB-independent liveness probe for Render's health check.")
 para(doc, "All distance work uses the PostGIS geography type so radii are in real metres on the WGS84 spheroid:")
 code(
     doc,
@@ -340,18 +348,24 @@ code(
     "                 ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)\n"
     "ORDER BY distance_m ASC;"
 )
-centered(doc, "Figure 3: Proximity query (PostGIS geography type)", italic=True, size=10, after=12)
+centered(doc, "Figure 3: Proximity query (PostGIS geography type)",
+         italic=True, size=10, after=12)
+para(doc, "Backend cross-cutting concerns:")
+bullet(doc, "All TIMESTAMP columns store naive UTC. A small utc_iso() helper appends Z so the browser does not interpret them as local time.")
+bullet(doc, "All endpoints validate input and return 400 for bad input, 404 for missing resources, with consistent {\"error\": \"...\"} bodies.")
+bullet(doc, "Every endpoint uses try/finally with explicit conn.close() to prevent connection leaks.")
+bullet(doc, "Type filter and kind filter are validated against allow-lists (VALID_TYPES, VALID_KINDS).")
 
 heading(doc, "4.3 OpenLayers Frontend", size=13, before=12)
-para(doc, "Single self-contained HTML file. Layer stack (bottom to top):")
-bullet(doc, "OpenStreetMap raster tiles.")
-bullet(doc, "Heatmap layer (recency-weighted KDE, zoom-aware kernel sizing).")
+para(doc, "Single self-contained HTML file with the OpenLayers library loaded from a CDN. Layer stack from bottom to top:")
+bullet(doc, "OpenStreetMap raster tiles (base layer).")
+bullet(doc, "Heatmap (recency-weighted KDE, zoom-aware kernel sizing, transparent low end).")
 bullet(doc, "Proximity search circle.")
-bullet(doc, "Encounter circle (when an interaction event is selected).")
-bullet(doc, "Movement trail (dashed coloured line per clicked asset).")
-bullet(doc, "Direction arrow (rotated SVG, yellow when speed >= 5 km/h).")
+bullet(doc, "Encounter circle (drawn when a side-panel interaction event is selected).")
+bullet(doc, "Movement trail (dashed coloured line for the clicked asset).")
+bullet(doc, "Direction arrow (rotated SVG arrow icon).")
 bullet(doc, "Interaction stars at event midpoints.")
-bullet(doc, "Asset markers (always on top to remain clickable).")
+bullet(doc, "Asset markers (always on top so clicks always hit them).")
 para(doc, "Periodic refresh:")
 code(
     doc,
@@ -368,24 +382,30 @@ code(
 )
 centered(doc, "Figure 4: Periodic refresh loop", italic=True, size=10, after=12)
 para(doc, "UI controls:")
-bullet(doc, "Type filter (vehicle / person / equipment / all).")
-bullet(doc, "Live vs. Playback mode toggle, with time slider, play button, and speed selector (1x / 5x / 30x).")
-bullet(doc, "Density heatmap toggle with hours selector (1 / 6 / 24 / 72).")
+bullet(doc, "Type filter (vehicle, person, equipment, all).")
+bullet(doc, "Live vs. Playback mode toggle, with time slider, play button, and speed selector (1x, 5x, 30x).")
+bullet(doc, "Density heatmap toggle with hours selector (1, 6, 24, 72).")
 bullet(doc, "Proximity search toggle with radius slider (100 m to 50 km).")
-bullet(doc, "Fit-to-all button.")
-bullet(doc, "Mobile-responsive layout: panels collapse, controls reflow, compass repositions below zoom buttons.")
+bullet(doc, "Fit-to-all button that auto-zooms to the extent of all visible assets.")
+bullet(doc, "Interactions side panel with filter chips, info popovers, click-to-zoom on each event.")
+bullet(doc, "Custom compass control: SVG icon at the bottom-right that rotates with the map; clicking it resets the rotation to north.")
+bullet(doc, "Mobile-responsive layout with a media query at 700 px: panels stack, controls collapse to a hamburger toggle, the compass moves below the OpenLayers zoom buttons, popups fit within the viewport.")
+bullet(doc, "API root configurable via meta[name=api-root] tag in the document head, or via ?api_root= query string for ad-hoc local-vs-cloud switching.")
 
 heading(doc, "4.4 Simulator and Automated Cleanup", size=13, before=12)
 para(doc, "The simulator (simulator.py) drives the system without real GPS data:")
-bullet(doc, "Random-walks every existing asset on a configurable tick (default every 2 s).")
-bullet(doc, "Optionally auto-spawns new assets, scattered around 20 Sri Lankan cities.")
-bullet(doc, "After each tick, calls POST /api/interactions/detect to advance the encounter detection.")
-bullet(doc, "CLI flags: --interval, --jitter, --island, --spawn-every, --spawn-max.")
+bullet(doc, "Random-walks every existing asset on a configurable tick (default every 5 s, demo uses 2 s).")
+bullet(doc, "Optionally auto-spawns new assets, scattered around 20 Sri Lankan cities (--island flag).")
+bullet(doc, "After each tick, calls POST /api/interactions/detect to advance encounter detection.")
+bullet(doc, "CLI flags: --interval, --jitter, --island, --spawn-every, --spawn-max, --types, --center, --spawn-radius, --city-jitter.")
+bullet(doc, "API_BASE environment variable lets the simulator point at the cloud during demos and at localhost during development without code changes.")
+bullet(doc, "Shares the SRI_LANKA_CITIES and NAME_POOL constants with the seed_assets.py bulk loader via a backend/constants.py module so the two scripts cannot drift out of sync.")
 para(doc, "Automated database housekeeping:")
-bullet(doc, "GitHub Actions workflow runs every hour (.github/workflows/cleanup.yml).")
+bullet(doc, "GitHub Actions workflow (.github/workflows/cleanup.yml) runs every hour on the hour, UTC.")
 bullet(doc, "Deletes asset_history rows older than 2 hours and closed interactions older than 2 hours.")
-bullet(doc, "Runs VACUUM ANALYZE to reclaim disk space.")
-bullet(doc, "Keeps the cloud database bounded at roughly 30 MB regardless of how long the simulator runs.")
+bullet(doc, "Runs VACUUM ANALYZE on both tables to reclaim disk space immediately rather than waiting for autovacuum.")
+bullet(doc, "Uses a SUPABASE_DB_URL secret (named historically; works for any PostgreSQL connection string).")
+bullet(doc, "Logs row counts before and after each cleanup so the run history doubles as a database health record.")
 para(doc, "Smoke test:")
 bullet(doc, "PowerShell script (smoke_test.ps1) exercises every endpoint plus four error paths.")
 bullet(doc, "Creates and deletes a test asset so the database is left in its original state.")
@@ -409,53 +429,54 @@ para(
 heading(doc, "Movement trails", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Per-asset trail, drawn as a dashed coloured polyline when an asset is clicked.")
 bullet(doc, "Backed by the asset_history table, populated automatically by an AFTER INSERT/UPDATE trigger on assets.geom.")
-bullet(doc, "GET /api/assets/<id>/history returns recent positions ordered ASC for line drawing.")
-bullet(doc, "Synthetic past-walk in the seed script ensures trails are visible immediately, not just after the simulator runs.")
+bullet(doc, "GET /api/assets/<id>/history returns the most recent N rows within a time window, sorted ASC for line drawing.")
+bullet(doc, "Synthetic past-walk in the seed script ensures trails are visible immediately, not just after the simulator has been running.")
 
 heading(doc, "Direction arrow with speed and heading", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Inline SVG arrow icon at the asset's current position, rotated to point in its direction of travel.")
-bullet(doc, "Rotation in radians from PostGIS ST_Azimuth applied between the last two history rows.")
+bullet(doc, "Heading from PostGIS ST_Azimuth between the last two history rows, applied as rotation in radians.")
 bullet(doc, "Speed computed as ST_Distance(geography) / time delta, displayed in km/h.")
-bullet(doc, "Arrow turns yellow when speed >= 5 km/h, white otherwise.")
+bullet(doc, "Arrow turns yellow when speed is at or above 5 km/h, white otherwise.")
 
 heading(doc, "Density heatmap (zoom-aware)", size=12, italic=True, bold=False, before=10)
-bullet(doc, "OpenLayers Heatmap layer fed by history rows, weighted by recency in [0, 1].")
+bullet(doc, "OpenLayers Heatmap layer fed by history rows weighted by recency in [0, 1].")
 bullet(doc, "Per-point weight intentionally low (0.10x of backend value) so density emerges from accumulation rather than each point saturating the gradient.")
-bullet(doc, "Custom gradient (transparent to blue to cyan to green to yellow to red) so empty areas remain clear.")
+bullet(doc, "Custom gradient (transparent through blue, cyan, green, yellow, red) so empty areas remain clear instead of glowing around isolated points.")
 bullet(doc, "Kernel radius and blur scale linearly with zoom: tight at island view, loose at city view.")
 bullet(doc, "Recomputes on zoom change with an 80 ms debounce.")
 
 heading(doc, "Time-travel playback", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Mode toggle (Live / Playback). Playback uses GET /api/snapshot?at=<iso>.")
 bullet(doc, "GET /api/history/range provides the slider's earliest and latest bounds.")
-bullet(doc, "Slider scrubs through history; play button auto-advances at 1x / 5x / 30x speed.")
-bullet(doc, "In-flight snapshot requests deduplicated with a Symbol-based ticket pattern (avoids race conditions when scrubbing fast).")
+bullet(doc, "Slider scrubs through history; play button auto-advances at 1x, 5x, or 30x speed.")
+bullet(doc, "In-flight snapshot requests deduplicated with a Symbol-based ticket pattern, with an additional mode check that kills late responses if the user switches back to Live mid-flight.")
 bullet(doc, "Switching back to Live mode resumes the periodic polling loop.")
 
 heading(doc, "Proximity search", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Click-to-search workflow: enable proximity mode, click anywhere on the map, see the search circle and matching assets.")
 bullet(doc, "GET /api/proximity uses PostGIS ST_DWithin on the geography type so the radius is true metres on the WGS84 spheroid.")
-bullet(doc, "Search circle drawn as a polygon approximation of a true geodesic circle to avoid Web Mercator latitude distortion.")
-bullet(doc, "Matched assets get a yellow halo and remain full-colour; non-matches fade to grey 35% opacity.")
+bullet(doc, "Search circle drawn as a polygon approximation of a true geodesic circle (96 vertices, latitude-corrected) to avoid Web Mercator distortion.")
+bullet(doc, "Matched assets get a yellow halo and remain full-colour; non-matches fade to grey at 35% opacity.")
 bullet(doc, "Radius slider re-runs the query live as it moves.")
 
 heading(doc, "Asset interaction events", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Five typed proximity rules: PICKUP (vehicle x person), LOADING (vehicle x equipment), OPERATING (person x equipment), MEETING (person x person), CONVOY (vehicle x vehicle).")
 bullet(doc, "Detection is a spatial join on the assets table: ST_DWithin on the geography type, joined with the rules table on type-pair match.")
-bullet(doc, "Idempotent open / close logic. Inserts on first proximity, updates ended_at when the pair drifts out of range.")
-bullet(doc, "Side panel polls /api/interactions every 5 s, renders filter chips, allows click-to-zoom-and-highlight on each event.")
+bullet(doc, "Idempotent open / close logic: inserts on first proximity, updates ended_at when the pair drifts out of range.")
+bullet(doc, "Side panel polls /api/interactions every 5 s, renders filter chips with info popovers, allows click-to-zoom-and-highlight on each event.")
 bullet(doc, "Each event marker is a 5-pointed star at the encounter midpoint, color-coded by kind.")
-bullet(doc, "Clicking an event in the side panel: highlights the two parties with a yellow halo, draws an encounter circle sized to the rule's proximity threshold, and zooms to fit both.")
+bullet(doc, "Clicking an event highlights the two parties with a yellow halo, draws an encounter circle sized to the rule's proximity threshold, and zooms to fit both parties and the circle.")
+bullet(doc, "Demo thresholds (80 to 300 m, 4 to 6 s) are loosened from realistic GPS values (5 to 20 m, 10 to 60 s); the realistic values are documented inline as comments next to the demo values.")
 
 heading(doc, "Sri Lanka Kandawala Grid coordinate display", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Popup shows asset position in WGS84 (EPSG:4326) AND Sri Lanka Kandawala Grid (EPSG:5234, Transverse Mercator).")
-bullet(doc, "Backend uses ST_Transform(geom, 5234) to compute easting / northing in the same query that returns the GeoJSON geometry.")
+bullet(doc, "Backend uses ST_Transform(geom, 5234) to compute easting and northing in the same query that returns the GeoJSON geometry.")
 bullet(doc, "Domain-relevant: Sri Lankan civil engineering and cadastral work uses EPSG:5234 metres, not WGS84 degrees.")
 
 heading(doc, "Land-polygon clipping", size=12, italic=True, bold=False, before=10)
 bullet(doc, "Hand-built ~38-vertex polygon of the Sri Lanka mainland, applied via ST_Contains.")
 bullet(doc, "Used by both the clustered seed (over-generates 12 candidates per city, takes first 6 on land) and the roaming tier (over-generates 200, takes first 30 on land).")
-bullet(doc, "Same containment predicate as a geofencing system, used here as a generative filter.")
+bullet(doc, "Same containment predicate as a geofencing system, used here as a generative filter rather than a query.")
 
 heading(doc, "How the innovations connect", size=12, italic=True, bold=False, before=10)
 para(
@@ -495,15 +516,17 @@ para(
 # ----- 5.2 Challenges ------------------------------------------------------
 
 heading(doc, "5.2 Challenges", size=13, before=12)
-bullet(doc, "Timezone handling: TIMESTAMP without time zone in PostgreSQL vs. UTC ISO strings from the frontend caused snapshot queries to silently return empty results until the parsing was rewritten to be UTC-aware.")
+bullet(doc, "Timezone handling: TIMESTAMP without time zone in PostgreSQL vs. UTC ISO strings from the frontend caused snapshot queries to silently return empty results until the parsing was rewritten to be UTC-aware. The fix included a utc_iso() helper that appends Z to all naive timestamps before sending them to the browser.")
 bullet(doc, "Interaction thresholds: real-world values (5 to 20 m, 10 to 60 s) never fired against the random-walk simulator. Thresholds were loosened to demo values (80 to 300 m, 4 to 6 s); real values preserved as in-line comments.")
 bullet(doc, "Sri Lanka land polygon: initial 19-vertex outline cut chords through bays. Refined to 38 vertices following the actual coastline.")
 bullet(doc, "Heatmap saturation: per-point weights too high, so single isolated assets painted full-red blobs. Fixed by reducing per-point weight to 10% and adding zoom-aware kernel sizing.")
 bullet(doc, "Mobile compass overlap: the custom compass control was repositioned at top-left on mobile and overlapped the OpenLayers zoom buttons. Moved below the zoom column.")
+bullet(doc, "Mobile layout: the controls panel and interactions panel both anchored to the corners on desktop but collided on phone-width viewports. Added a 700 px media query that collapses the controls into a hamburger toggle and anchors the interactions panel to the bottom edge.")
 bullet(doc, "CORS errors during local development, surfacing as generic network failures. Fixed with flask-cors.")
-bullet(doc, "Connection leak in early backend code (with conn pattern doesn't close). Refactored to try/finally with explicit close.")
-bullet(doc, "XSS risk in popup HTML template (innerHTML with asset name). Fixed by using textContent.")
+bullet(doc, "Connection leak in early backend code (\"with conn:\" doesn't close). Refactored to try/finally with explicit close.")
+bullet(doc, "XSS risk in popup HTML template (innerHTML with asset name). Fixed by using textContent throughout.")
 bullet(doc, "history endpoint LIMIT was returning oldest N within window instead of most recent N. Fixed by wrapping in a DESC subquery before re-ordering ASC.")
+bullet(doc, "Race condition: rapid Live/Playback mode switches or rapid heatmap filter changes could let stale fetch responses overwrite newer state. Fixed by adding Symbol-based inflight tickets to both renderSnapshot and refreshHeatmap.")
 
 # ----- 5.3 Limitations -----------------------------------------------------
 
@@ -513,19 +536,19 @@ bullet(doc, "Simulator uses random walk, which does not match real GPS movement 
 bullet(doc, "No connection pooling. Each request opens a new psycopg2 connection.")
 bullet(doc, "No authentication or authorization. The API is fully open.")
 bullet(doc, "Sri Lanka land polygon is hand-built (~38 vertices). Excludes Mannar Island, the Jaffna islands, and small offshore landforms.")
-bullet(doc, "asset_history grows unboundedly without the cleanup workflow. Free-tier Supabase (500 MB) would fill in roughly 18 hours at 2-second simulator ticks.")
-bullet(doc, "Render free tier sleeps after 15 minutes idle, causing a 30-second cold start on the first request after a quiet period.")
-bullet(doc, "Flask development server with debug mode enabled. Acceptable for local and demo use, not for production.")
+bullet(doc, "asset_history grows unboundedly without the cleanup workflow. Free-tier Render PostgreSQL (1 GB) would fill in roughly 36 hours at 2-second simulator ticks if left unchecked.")
+bullet(doc, "Render free web service tier sleeps after 15 minutes idle, causing a 30-second cold start on the first request after a quiet period.")
+bullet(doc, "Flask development server with debug mode enabled. Acceptable for local and demo use, not for production (production should use gunicorn).")
 
 # ----- 5.4 Improvements ----------------------------------------------------
 
 heading(doc, "5.4 Improvements", size=13, before=12)
 bullet(doc, "Real-time updates via WebSockets or Server-Sent Events instead of 5-second polling.")
 bullet(doc, "JWT-based authentication and role-based access control. Tenant isolation per organization.")
-bullet(doc, "Geofencing: zones table and zone_events table populated by a trigger using ST_Contains. Frontend draw tool for users to define zones.")
+bullet(doc, "Geofencing: zones table and zone_events table populated by a trigger using ST_Contains. Frontend draw tool for users to define zones interactively.")
 bullet(doc, "Mobile companion app that sends real device GPS via the existing PUT endpoint, replacing the simulator with real data.")
 bullet(doc, "History retention policy: aggregate rows older than 30 days into hourly summaries, archive raw rows to cold storage.")
-bullet(doc, "Production deployment: gunicorn + nginx, Supabase Pro for the database, Cloudflare Pages for the frontend, environment variables managed through a secrets manager.")
+bullet(doc, "Production deployment: gunicorn behind nginx, a paid Render PostgreSQL plan or migration to a dedicated managed Postgres (AWS RDS, Google Cloud SQL), Cloudflare Pages for the frontend, environment variables managed through a secrets manager.")
 bullet(doc, "Analytics dashboards: average daily distance per asset, common routes, dwell time per zone, predicted arrival times.")
 bullet(doc, "Import the official Sri Lanka boundary GeoJSON from the Survey Department for an exact land mask.")
 
@@ -545,7 +568,7 @@ doc.add_page_break()
 
 heading(doc, "6.0 Lessons Learned")
 para(doc, "Five lessons from the development process:")
-bullet(doc, "Let the database do spatial work. PostGIS functions (ST_DWithin, ST_Distance, ST_Azimuth, ST_Transform) are faster and more correct than equivalent Python implementations, and the GIST index makes them fast at any data size.")
+bullet(doc, "Let the database do spatial work. PostGIS functions (ST_DWithin, ST_Distance, ST_Azimuth, ST_Transform, ST_Contains) are faster and more correct than equivalent Python implementations, and the GIST index makes them fast at any data size.")
 bullet(doc, "Test against realistic data. The interaction detection feature was specified for tight real-world thresholds and worked correctly on paper, but never fired against the random-walk simulator. Synthetic test data with different statistical properties from production data can hide design flaws.")
 bullet(doc, "Separate current state from historical record. A single trigger that populates asset_history on every position change unlocked five distinct features (trails, motion arrows, playback, heatmap, interaction events) without any additional schema work.")
 bullet(doc, "Document trade-offs in the source code. Loosened interaction thresholds for the demo, but kept the original real-world values as in-line comments so the design intent is not lost.")
@@ -566,9 +589,9 @@ para(
     "interactive map with full metadata."
 )
 para(doc, "Aim achieved:")
-bullet(doc, "14 REST endpoints implemented covering CRUD plus seven categories of spatial query.")
+bullet(doc, "15 REST route-method handlers implemented covering CRUD plus seven categories of spatial query.")
 bullet(doc, "Seven innovation features beyond the tutorial baseline: trails, direction arrows, density heatmap, time-travel playback, proximity search, asset interactions, dual-CRS coordinate display.")
-bullet(doc, "Mobile-responsive layout with collapsible panels and repositioned controls.")
+bullet(doc, "Mobile-responsive layout with collapsible panels, repositioned compass, and adaptive popup sizing.")
 bullet(doc, "Public deployment with hourly automated database cleanup keeping the system within free-tier limits indefinitely.")
 para(
     doc,
@@ -613,11 +636,11 @@ refs = [
     "Survey Department of Sri Lanka. (n.d.). Sri Lanka Datum and Projection "
     "Systems. Retrieved from https://www.survey.gov.lk/",
 
-    "Render, Inc. (2024). Render Free Tier Documentation. Retrieved from "
-    "https://render.com/docs/free",
+    "Render, Inc. (2024). Render Documentation - Web Services and PostgreSQL. "
+    "Retrieved from https://render.com/docs",
 
-    "Supabase. (2024). Supabase PostgreSQL Documentation. Retrieved from "
-    "https://supabase.com/docs/guides/database",
+    "GitHub, Inc. (2024). GitHub Actions Documentation. Retrieved from "
+    "https://docs.github.com/en/actions",
 
     "Tilakaratne, M. D. (2026). WebGIS Asset Tracking Application [Source code]. "
     "GitHub. Retrieved from https://github.com/MihanTilk/WebGIS",
@@ -626,6 +649,8 @@ for r in refs:
     p = doc.add_paragraph(r, style="List Bullet")
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
+
+# ===== save ================================================================
 
 import os
 
@@ -636,5 +661,5 @@ try:
 except PermissionError:
     fallback = "c:/Users/mitil/OneDrive/Desktop/226121P/226121P_doc2_NEW.docx"
     doc.save(fallback)
-    print(f"Original locked (probably open in Word). Saved instead to: {fallback}")
-    print("Close Word, delete 226121P_doc2.docx, rename _NEW.docx, and you're done.")
+    print(f"Original locked (open in Word). Saved instead to: {fallback}")
+    print("Close Word, delete 226121P_doc2.docx, rename _NEW.docx, done.")
