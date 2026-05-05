@@ -29,30 +29,29 @@ WITH sri_lanka(geom) AS (
     )
 ),
 cities(city, lon, lat) AS (VALUES
-    ('Colombo',      79.861::float, 6.927::float),
-    ('Negombo',      79.836,        7.208),
-    ('Galle',        80.221,        6.054),
-    ('Matara',       80.535,        5.949),
-    ('Hambantota',   81.119,        6.124),
-    ('Kandy',        80.634,        7.291),
-    ('Nuwara Eliya', 80.789,        6.950),
-    ('Ratnapura',    80.404,        6.683),
-    ('Badulla',      81.055,        6.993),
-    ('Kurunegala',   80.365,        7.486),
-    ('Anuradhapura', 80.404,        8.311),
-    ('Polonnaruwa',  81.019,        7.940),
-    ('Sigiriya',     80.760,        7.957),
-    ('Dambulla',     80.652,        7.868),
-    ('Trincomalee',  81.234,        8.587),
-    ('Batticaloa',   81.692,        7.717),
-    ('Vavuniya',     80.497,        8.754),
-    ('Mannar',       79.905,        8.981),
-    ('Jaffna',       80.025,        9.661),
-    ('Kegalle',      80.346,        7.251)
+    ('Colombo', 79.861::float, 6.927::float),
+    ('Negombo', 79.836, 7.208),
+    ('Galle', 80.221, 6.054),
+    ('Matara', 80.535, 5.949),
+    ('Hambantota', 81.119, 6.124),
+    ('Kandy', 80.634, 7.291),
+    ('Nuwara Eliya', 80.789, 6.950),
+    ('Ratnapura', 80.404, 6.683),
+    ('Badulla', 81.055, 6.993),
+    ('Kurunegala', 80.365, 7.486),
+    ('Anuradhapura', 80.404, 8.311),
+    ('Polonnaruwa', 81.019, 7.940),
+    ('Sigiriya', 80.760, 7.957),
+    ('Dambulla', 80.652, 7.868),
+    ('Trincomalee', 81.234, 8.587),
+    ('Batticaloa', 81.692, 7.717),
+    ('Vavuniya', 80.497, 8.754),
+    ('Mannar', 79.905, 8.981),
+    ('Jaffna', 80.025, 9.661),
+    ('Kegalle', 80.346, 7.251)
 ),
--- Over-generate 12 candidates per city; we'll pick the first 6 that pass
--- the land-polygon test. Coastal cities sometimes lose a few candidates
--- to the sea — the cluster shrinks gracefully.
+-- 12 candidates per city; first 6 that pass the land-polygon test win.
+-- Coastal cities may lose a few candidates to the sea.
 plan AS (
     SELECT
         c.city, c.lon, c.lat, gs AS seq,
@@ -72,20 +71,20 @@ on_land AS (
 typed AS (
     SELECT *,
         CASE
-            WHEN r_type < 0.60 THEN 'person'      -- 60%
-            WHEN r_type < 0.85 THEN 'vehicle'     -- 25%
-            ELSE                     'equipment'  -- 15%
+            WHEN r_type < 0.60 THEN 'person' -- 60%
+            WHEN r_type < 0.85 THEN 'vehicle' -- 25%
+            ELSE 'equipment' -- 15%
         END AS asset_type
     FROM on_land
-    WHERE rn_in_city <= 6                          -- target 6 per city
+    WHERE rn_in_city <= 6 -- target 6 per city
 ),
 named AS (
     SELECT
         asset_type, city, seq, jit_lon, jit_lat,
         CASE asset_type
-            WHEN 'person'    THEN (ARRAY['Surveyor','Inspector','Technician','Field Agent','Engineer'])[1 + (random()*5)::int % 5]
-            WHEN 'vehicle'   THEN (ARRAY['Truck','Van','Lorry','Pickup','Bus','Bike'])[1 + (random()*6)::int % 6]
-            ELSE                  (ARRAY['Generator','Drone','Crane','Excavator','Compactor','Beacon'])[1 + (random()*6)::int % 6]
+            WHEN 'person' THEN (ARRAY['Surveyor','Inspector','Technician','Field Agent','Engineer'])[1 + (random()*5)::int % 5]
+            WHEN 'vehicle' THEN (ARRAY['Truck','Van','Lorry','Pickup','Bus','Bike'])[1 + (random()*6)::int % 6]
+            ELSE (ARRAY['Generator','Drone','Crane','Excavator','Compactor','Beacon'])[1 + (random()*6)::int % 6]
         END AS base_name
     FROM typed
 )
@@ -97,11 +96,9 @@ SELECT
 FROM named;
 
 -- Roaming tier: ~30 assets scattered freely on Sri Lanka land (in-transit /
--- off-grid). Bias toward vehicles since real road traffic between cities is
--- mostly vehicular. We over-generate ~150 random bbox candidates and clip
--- against a hand-built Sri Lanka mainland polygon (PostGIS ST_Contains),
--- then take the first 30 that fall on land. This is the same containment
--- predicate used in the geofencing literature (Lec 1: spatial relationships).
+-- off-grid). Biased toward vehicles since road traffic between cities is
+-- mostly vehicular. Over-generate ~200 random bbox candidates, clip against
+-- the mainland polygon with ST_Contains, take the first 30 that fall on land.
 WITH sri_lanka(geom) AS (
     -- Same detailed polygon as the clustered tier above. Duplicated rather
     -- than shared because the two INSERT statements are independent.
@@ -124,7 +121,7 @@ roam_candidates AS (
         gs,
         random() AS r_type,
         79.70 + random() * (81.85 - 79.70) AS lon,
-        6.00  + random() * (9.70  - 6.00)  AS lat
+        6.00 + random() * (9.70 - 6.00) AS lat
     FROM generate_series(1, 200) gs
 ),
 roam_on_land AS (
@@ -137,9 +134,9 @@ roam_on_land AS (
 roam_typed AS (
     SELECT *,
         CASE
-            WHEN r_type < 0.55 THEN 'vehicle'    -- 55%
-            WHEN r_type < 0.85 THEN 'person'     -- 30%
-            ELSE                     'equipment' -- 15%
+            WHEN r_type < 0.55 THEN 'vehicle' -- 55%
+            WHEN r_type < 0.85 THEN 'person' -- 30%
+            ELSE 'equipment' -- 15%
         END AS asset_type
     FROM roam_on_land
     WHERE rn <= 30
@@ -147,9 +144,9 @@ roam_typed AS (
 roam_named AS (
     SELECT *,
         CASE asset_type
-            WHEN 'person'    THEN (ARRAY['Surveyor','Inspector','Technician','Field Agent','Engineer'])[1 + (random()*5)::int % 5]
-            WHEN 'vehicle'   THEN (ARRAY['Truck','Van','Lorry','Pickup','Bus','Bike'])[1 + (random()*6)::int % 6]
-            ELSE                  (ARRAY['Generator','Drone','Crane','Excavator','Compactor','Beacon'])[1 + (random()*6)::int % 6]
+            WHEN 'person' THEN (ARRAY['Surveyor','Inspector','Technician','Field Agent','Engineer'])[1 + (random()*5)::int % 5]
+            WHEN 'vehicle' THEN (ARRAY['Truck','Van','Lorry','Pickup','Bus','Bike'])[1 + (random()*6)::int % 6]
+            ELSE (ARRAY['Generator','Drone','Crane','Excavator','Compactor','Beacon'])[1 + (random()*6)::int % 6]
         END AS base_name
     FROM roam_typed
 )
@@ -227,21 +224,21 @@ BEGIN
     typed_pairs AS (
         SELECT *,
             CASE
-                WHEN (a_t='vehicle'   AND b_t='person')    OR (a_t='person'    AND b_t='vehicle')   THEN 'PICKUP'
-                WHEN (a_t='vehicle'   AND b_t='equipment') OR (a_t='equipment' AND b_t='vehicle')   THEN 'LOADING'
-                WHEN (a_t='person'    AND b_t='equipment') OR (a_t='equipment' AND b_t='person')    THEN 'OPERATING'
-                WHEN  a_t='person'    AND b_t='person'                                              THEN 'MEETING'
-                WHEN  a_t='vehicle'   AND b_t='vehicle'                                             THEN 'CONVOY'
+                WHEN (a_t='vehicle' AND b_t='person') OR (a_t='person' AND b_t='vehicle') THEN 'PICKUP'
+                WHEN (a_t='vehicle' AND b_t='equipment') OR (a_t='equipment' AND b_t='vehicle') THEN 'LOADING'
+                WHEN (a_t='person' AND b_t='equipment') OR (a_t='equipment' AND b_t='person') THEN 'OPERATING'
+                WHEN a_t='person' AND b_t='person' THEN 'MEETING'
+                WHEN a_t='vehicle' AND b_t='vehicle' THEN 'CONVOY'
             END AS kind
         FROM near_pairs
     ),
     -- Sample at most one pair per kind per city slot for variety
     sampled AS (
         SELECT *,
-            random() AS r_age,        -- 0..1: how far back in the hour
-            random() AS r_dur,        -- 0..1: duration spread
+            random() AS r_age, -- 0..1: how far back in the hour
+            random() AS r_dur, -- 0..1: duration spread
             row_number() OVER (PARTITION BY kind ORDER BY random()) AS k_rn,
-            row_number() OVER (ORDER BY random())                   AS overall_rn
+            row_number() OVER (ORDER BY random()) AS overall_rn
         FROM typed_pairs
         WHERE kind IS NOT NULL
     )
@@ -259,8 +256,8 @@ BEGIN
         END AS ended_at,
         ST_Centroid(ST_Collect(a_geom, b_geom)) AS location
     FROM sampled
-    WHERE k_rn <= 5            -- at most 5 of each kind
-      AND overall_rn <= 25     -- 25 total
+    WHERE k_rn <= 5 -- at most 5 of each kind
+      AND overall_rn <= 25 -- 25 total
     ORDER BY overall_rn;
 END $$;
 

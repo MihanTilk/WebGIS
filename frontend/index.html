@@ -188,10 +188,12 @@
          it doesn't fight the interactions panel for the bottom-left. */
       .legend { display: none; }
 
-      /* Move compass to the free top-left so it doesn't sit on the bottom
-         interactions panel. */
+      /* Move compass below the OL zoom buttons (which sit at top-left at
+         roughly 0..70 px) so the compass doesn't overlap the zoom-in
+         button. The bottom edge of the screen is taken by the interactions
+         panel, so we keep the compass on the left column instead. */
       .compass-control {
-        top: 8px; left: 8px;
+        top: 78px; left: 8px;
         bottom: auto; right: auto;
         width: 38px; height: 38px;
       }
@@ -390,11 +392,12 @@
 
     // Density heatmap of historical positions. Recency-decay weight comes
     // from the backend; OpenLayers' Heatmap does the kernel density.
-    // Per-point weight is intentionally small (~10% of the backend value)
-    // so density EMERGES from overlap rather than each isolated point
-    // saturating the gradient on its own. Blur and radius adapt to zoom
-    // level so the visualization reads correctly whether you're looking
-    // at the whole island or zoomed into a single city.
+    // The per-point weight multiplier and kernel radius both scale with
+    // zoom (see updateHeatmapStyle): at low zoom we keep weights small so
+    // density EMERGES from overlap, but at high zoom we boost weights and
+    // radius so individual / sparse points still read clearly instead of
+    // fading into the basemap.
+    let heatmapWeightMultiplier = 0.10;
     const heatmapSource = new ol.source.Vector();
     const heatmapLayer  = new ol.layer.Heatmap({
       source: heatmapSource,
@@ -410,7 +413,7 @@
         'rgba(255,255,0,0.90)',// 0.8 yellow
         'rgba(255,0,0,1.0)',   // 1.0 red
       ],
-      weight: f => Math.min(1, (f.get('weight') ?? 0.5) * 0.10),
+      weight: f => Math.min(1, (f.get('weight') ?? 0.5) * heatmapWeightMultiplier),
       visible: false,
     });
 
@@ -1018,10 +1021,8 @@
     const heatmapHoursEl = document.getElementById('heatmap-hours');
     const heatmapStatusEl = document.getElementById('heatmap-status');
 
-    // Zoom-aware kernel sizing. At low zoom (whole island) the kernel must
-    // be tight or every cluster becomes a giant blob; at high zoom (single
-    // city) it should be looser so individual points blend into a smooth
-    // continuous surface (Lec 1a: continuous-field view of discrete obs).
+    // Zoom-aware kernel — tight at low zoom so clusters don't smear into
+    // one blob, looser at high zoom so points blend.
     function updateHeatmapStyle() {
       if (!heatmapLayer.getVisible()) return;
       const z = map.getView().getZoom() || 8;

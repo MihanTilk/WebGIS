@@ -23,32 +23,21 @@ DB = dict(
 
 VALID_TYPES = {"vehicle", "person", "equipment"}
 
-# Asset-interaction rules. Each pair of types means a different real-world
-# phenomenon, so the proximity threshold and the minimum dwell time differ.
-# Distances are metres on the WGS84 spheroid (geography type), durations are
-# seconds. Types are unordered — the SQL handles (a,b) and (b,a) equivalently.
-#
-# DEMO VALUES vs REAL-WORLD VALUES: the original/spec thresholds (5–20 m,
-# 10–60 s) are realistic for actual GPS pings but never fire in this random-
-# walk simulation, where assets jitter ~200 m per tick and rarely linger in
-# the same spot. The values below are deliberately loosened so encounter
-# events are visible during a 1–2 minute demo. For a real deployment with
-# real GPS, swap them back to the column on the right.
-#                                              demo  /  real-world
+# Distances in metres (geography type), durations in seconds. Type pairs are
+# unordered. Thresholds are loosened from realistic values so events fire
+# during a short demo; in-line comments give the realistic equivalents.
 INTERACTION_RULES = [
-    # (type_a,    type_b,      distance_m, min_duration_s, kind)
-    ("vehicle",   "person",    150.0,  4, "PICKUP"),     # 10 m, 30 s
-    ("vehicle",   "equipment", 150.0,  4, "LOADING"),    # 10 m, 30 s
-    ("person",    "equipment",  80.0,  6, "OPERATING"),  #  5 m, 60 s
-    ("person",    "person",     80.0,  6, "MEETING"),    #  5 m, 60 s
-    ("vehicle",   "vehicle",   300.0,  4, "CONVOY"),     # 20 m, 10 s
+    # (type_a, type_b, distance_m, min_duration_s, kind)
+    ("vehicle", "person", 150.0, 4, "PICKUP"), # real-world: ~10 m, 30 s
+    ("vehicle", "equipment", 150.0, 4, "LOADING"), # real-world: ~10 m, 30 s
+    ("person", "equipment", 80.0, 6, "OPERATING"), # real-world: ~5 m, 60 s
+    ("person", "person", 80.0, 6, "MEETING"), # real-world: ~5 m, 60 s
+    ("vehicle", "vehicle", 300.0, 4, "CONVOY"), # real-world: ~20 m, 10 s
 ]
 VALID_KINDS = {r[4] for r in INTERACTION_RULES}
 
-# Sri Lanka Kandawala / Sri Lanka Grid (Transverse Mercator). Locally
-# conformal — preserves angles and shapes for surveying/engineering use,
-# unlike Web Mercator which is conformal globally but heavily area-distorted
-# at high latitudes (Lec 2: Map Projections — Properties).
+# Sri Lanka Grid (EPSG:5234, Transverse Mercator). Used to show
+# Easting/Northing in popups alongside WGS84 lat/lon.
 SRI_LANKA_GRID_SRID = 5234
 
 GEOM_SELECT = (
@@ -63,14 +52,8 @@ def get_conn():
 
 
 def utc_iso(dt):
-    """Render a datetime as an ISO 8601 string with explicit UTC `Z`.
-
-    DB columns are TIMESTAMP without time zone, but on Render the server
-    runs in UTC and `NOW()` returns UTC, so naive values here are
-    effectively UTC. Without the `Z` suffix, browsers interpret the ISO
-    string as local time and the slider/snapshot epoch math drifts by
-    the client's offset.
-    """
+    """ISO 8601 with `Z`. DB stores UTC in naive timestamps; without the
+    suffix the browser parses them as local time."""
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -183,10 +166,8 @@ def snapshot():
     if not at:
         return jsonify({"error": "Missing 'at' query parameter (ISO timestamp)"}), 400
     try:
-        # Frontend (Date.toISOString) sends UTC ending in 'Z'. Treat naive
-        # strings as UTC too. DB column is TIMESTAMP-without-tz holding
-        # UTC, so we compare against a naive UTC datetime regardless of
-        # what timezone the Flask process happens to be running in.
+        # Frontend sends UTC; DB column is TIMESTAMP-without-tz holding UTC.
+        # Strip tz so the comparison works regardless of server tz.
         if at.endswith("Z"):
             aware = datetime.fromisoformat(at[:-1]).replace(tzinfo=timezone.utc)
         else:
@@ -237,13 +218,8 @@ def snapshot():
 
 @app.route("/api/heatmap", methods=["GET"])
 def heatmap():
-    """Density of historical positions over a time window.
-
-    Returns one Point feature per history row, with a recency-decay weight
-    in [0,1] so the heatmap emphasises recent dwell. Useful for answering
-    'where do people spend the most time?' (Lec 1a: continuous-field view
-    of discrete observations; Lec 1b: dynamic visualization of geo data).
-    """
+    """Historical positions in a time window. Each row gets a recency-decay
+    weight in [0,1] so the heatmap emphasises recent dwell."""
     try:
         hours = max(1, min(int(request.args.get("hours", 24)), 24 * 7))
         limit = max(1, min(int(request.args.get("limit", 5000)), 20000))
@@ -279,9 +255,8 @@ def heatmap():
     window_seconds = hours * 3600
     features = []
     for r in rows:
-        # Linear decay: a point recorded `window_seconds` ago has weight 0,
-        # a point recorded just now has weight 1. EXTRACT(EPOCH ...) comes
-        # back as Decimal; cast so the float subtraction doesn't TypeError.
+        # Linear decay: weight=1 now, weight=0 at the edge of the window.
+        # age_s comes back as Decimal — cast for the float subtract.
         age_s = float(r["age_s"])
         weight = max(0.0, 1.0 - (age_s / window_seconds))
         features.append(
@@ -324,9 +299,8 @@ def get_asset_history(asset_id):
             if asset is None:
                 return jsonify({"error": "Not found"}), 404
 
-            # Take the MOST RECENT `limit` rows within the time window
-            # (subquery sorts DESC + LIMIT), then re-order ASC so the
-            # LineString draws oldest → newest.
+            # Most recent `limit` rows (DESC + LIMIT), then re-sort ASC so
+            # the LineString draws oldest → newest.
             cur.execute(
                 """
                 SELECT recorded_at, lon, lat
@@ -396,14 +370,8 @@ def get_asset_history(asset_id):
 
 @app.route("/api/assets/<int:asset_id>/motion", methods=["GET"])
 def get_motion(asset_id):
-    """Latest speed and heading derived from the two most recent history rows.
-
-    - Speed is a *ratio-scale* attribute: distance over time, in metres/second
-      and km/h. Zero means truly motionless.
-    - Heading is a *cyclic-scale* attribute on [0, 360): degrees clockwise
-      from true north (ST_Azimuth convention). 359° is adjacent to 0°.
-    Both classifications come from Lec 1a "attribute scales of measurement".
-    """
+    """Speed (m/s, km/h) and heading (degrees clockwise from north) from
+    the two most recent history rows."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -461,14 +429,8 @@ def get_motion(asset_id):
 
 @app.route("/api/proximity", methods=["GET"])
 def proximity():
-    """Find every asset within radius_m metres of (lon, lat).
-
-    Uses ST_DWithin on the geography type so the radius is interpreted
-    in real metres on the WGS84 spheroid (independent of latitude
-    distortion). The GIST index on `assets.geom` makes this O(log n)
-    bounding-box pruning before the precise distance check — the
-    canonical 'proximity' relationship from Lec 1.
-    """
+    """Assets within radius_m of (lon, lat). Uses ST_DWithin on the
+    geography type so the radius is real metres regardless of latitude."""
     try:
         lon = float(request.args["lon"])
         lat = float(request.args["lat"])
@@ -623,13 +585,8 @@ _DURATION_VALUES_SQL = ",".join(
 
 @app.route("/api/interactions/detect", methods=["POST"])
 def detect_interactions():
-    """Run one detection sweep across the current `assets` table.
-
-    Idempotent: opens new interactions for type-pairs that satisfy a rule's
-    distance threshold and aren't already active; closes (sets `ended_at`)
-    interactions whose pair has now drifted out of range. Intended to be
-    called periodically by the simulator after every tick.
-    """
+    """One detection sweep. Opens new interactions for type-pairs within
+    range, closes those that have drifted out. Idempotent."""
     open_sql = f"""
         WITH rules(a_t, b_t, dist_m, kind) AS (VALUES {_RULE_VALUES_SQL}),
         candidate_pairs AS (
