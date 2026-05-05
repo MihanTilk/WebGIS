@@ -1,10 +1,13 @@
-# Render Blueprint — provisions Postgres+PostGIS, the Flask API, the static
-# frontend, and the simulator worker. After Render creates the services,
-# the only manual steps are:
-#   1. Apply sql/01_schema.sql + sql/03_history.sql against the new DB
-#      (use the External Connection String from Render → Databases → Connect).
-#   2. Set the API_BASE env var on the simulator worker AND the api-root meta
-#      tag in frontend/index.html to the deployed backend URL.
+# Render Blueprint — provisions Postgres+PostGIS, the Flask API, and the
+# static frontend. The simulator runs locally (Render workers are no longer
+# free); point it at the deployed API by setting API_BASE in your shell.
+#
+# Manual post-deploy steps:
+#   1. Apply sql/01_schema.sql + sql/03_history.sql + sql/04_clustered_seed.sql
+#      + sql/05_interactions.sql against the new DB (External Connection
+#      String from Render → Databases → asset-tracking-db → Connect).
+#   2. Set the api-root meta tag in frontend/index.html to the deployed
+#      backend URL (Render → asset-tracking-api → top of page), commit, push.
 
 databases:
   - name: asset-tracking-db
@@ -60,18 +63,3 @@ services:
       - path: /*
         name: Cache-Control
         value: "no-cache"
-
-  # Simulator (background worker — keeps the demo "alive")
-  - type: worker
-    name: asset-tracking-simulator
-    runtime: python
-    region: singapore
-    plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: python simulator.py --interval 10 --spawn-every 30 --spawn-max 25 --island
-    envVars:
-      # Set this manually after first deploy to the deployed API URL,
-      # e.g. https://asset-tracking-api.onrender.com/api
-      - key: API_BASE
-        sync: false
