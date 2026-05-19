@@ -1,5 +1,8 @@
 import json
 import os
+import random
+import threading
+import time
 from datetime import datetime, timezone
 
 import psycopg2
@@ -751,8 +754,73 @@ def interaction_rules():
     )
 
 
+# --- Background sim + retention -------------------------------------------
+# Runs in-process so the deployed API drives its own movement on Render's
+# free tier (no separate worker dyno). Procfile pins --workers 1 to keep a
+# single ticker; if you raise it, gate this with pg_try_advisory_lock.
+_JITTER = {"vehicle": 0.0020, "person": 0.0006, "equipment": 0.00015}
+
+
+def _bg_loop():
+    tick = 0
+    while True:
+        time.sleep(5)
+        try:
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id, asset_type, ST_X(geom), ST_Y(geom) FROM assets")
+                    for aid, t, lon, lat in cur.fetchall():
+                        if t == "equipment" and random.random() > 0.10:
+                            continue  # equipment mostly sits still
+                        j = _JITTER.get(t, 0.0006)
+                        cur.execute(
+                            "UPDATE assets SET geom = ST_SetSRID(ST_MakePoint(%s,%s),4326),"
+                            " last_seen = NOW() WHERE id = %s",
+                            (lon + random.uniform(-j, j), lat + random.uniform(-j, j), aid),
+                        )
+                    cur.execute(f"""
+                        WITH rules(a_t,b_t,dist_m,kind) AS (VALUES {_RULE_VALUES_SQL}),
+                        cp AS (SELECT LEAST(a.id,b.id) aa, GREATEST(a.id,b.id) bb, r.kind,
+                                       ST_Centroid(ST_Collect(a.geom,b.geom)) mid
+                               FROM assets a JOIN assets b ON a.id<b.id
+                               JOIN rules r ON ((a.asset_type=r.a_t AND b.asset_type=r.b_t)
+                                             OR (a.asset_type=r.b_t AND b.asset_type=r.a_t))
+                               WHERE ST_DWithin(a.geom::geography,b.geom::geography,r.dist_m))
+                        INSERT INTO interactions(asset_a_id,asset_b_id,kind,started_at,location)
+                        SELECT aa,bb,kind,NOW(),mid FROM cp
+                        WHERE NOT EXISTS (SELECT 1 FROM interactions i WHERE i.asset_a_id=cp.aa
+                            AND i.asset_b_id=cp.bb AND i.kind=cp.kind AND i.ended_at IS NULL)""")
+                    cur.execute(f"""
+                        WITH rules(a_t,b_t,dist_m,kind) AS (VALUES {_RULE_VALUES_SQL}),
+                        cp AS (SELECT LEAST(a.id,b.id) aa, GREATEST(a.id,b.id) bb, r.kind
+                               FROM assets a JOIN assets b ON a.id<b.id
+                               JOIN rules r ON ((a.asset_type=r.a_t AND b.asset_type=r.b_t)
+                                             OR (a.asset_type=r.b_t AND b.asset_type=r.a_t))
+                               WHERE ST_DWithin(a.geom::geography,b.geom::geography,r.dist_m))
+                        UPDATE interactions i SET ended_at = NOW()
+                        WHERE i.ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM cp
+                            WHERE cp.aa=i.asset_a_id AND cp.bb=i.asset_b_id AND cp.kind=i.kind)""")
+                    tick += 1
+                    if tick % 60 == 0:  # every ~5 min, trim storage
+                        cur.execute("DELETE FROM asset_history WHERE recorded_at < NOW() - INTERVAL '6 hours'")
+                        cur.execute("""DELETE FROM asset_history h USING (
+                            SELECT id, ROW_NUMBER() OVER (PARTITION BY asset_id ORDER BY recorded_at DESC) rn
+                            FROM asset_history) r WHERE h.id=r.id AND r.rn > 240""")
+                        cur.execute("DELETE FROM interactions WHERE ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '24 hours'")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[bg] tick error: {e}")
+
+
+if os.getenv("ENABLE_BG_SIM", "1") == "1":
+    threading.Thread(target=_bg_loop, daemon=True).start()
+
+
 if __name__ == "__main__":
     # Dev only — in production gunicorn imports `app` directly (see Procfile).
     port = int(os.getenv("PORT", "5000"))
     debug = os.getenv("FLASK_DEBUG", "1") == "1"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)
