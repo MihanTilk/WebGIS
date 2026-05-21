@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+from constants import SRI_LANKA_CITIES
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -760,6 +762,17 @@ def interaction_rules():
 # single ticker; if you raise it, gate this with pg_try_advisory_lock.
 _JITTER = {"vehicle": 0.0020, "person": 0.0006, "equipment": 0.00015}
 
+# ~40% of assets (id % 5 < 2) are "anchored": each tick they get nudged back
+# toward their nearest city so clusters survive and interactions keep firing.
+# The other ~60% roam freely. _ANCHOR_PULL is the fraction of the gap to the
+# city closed per tick — higher = tighter clusters, more interactions.
+_ANCHOR_PULL = 0.20
+
+
+def _nearest_city(lon, lat):
+    """Closest (name, lon, lat) by flat-earth squared distance — fine at this scale."""
+    return min(SRI_LANKA_CITIES, key=lambda c: (c[1] - lon) ** 2 + (c[2] - lat) ** 2)
+
 
 def _bg_loop():
     tick = 0
@@ -774,10 +787,16 @@ def _bg_loop():
                         if t == "equipment" and random.random() > 0.10:
                             continue  # equipment mostly sits still
                         j = _JITTER.get(t, 0.0006)
+                        new_lon = lon + random.uniform(-j, j)
+                        new_lat = lat + random.uniform(-j, j)
+                        if aid % 5 < 2:  # anchored subset — pull toward home city
+                            _, clon, clat = _nearest_city(new_lon, new_lat)
+                            new_lon += _ANCHOR_PULL * (clon - new_lon)
+                            new_lat += _ANCHOR_PULL * (clat - new_lat)
                         cur.execute(
                             "UPDATE assets SET geom = ST_SetSRID(ST_MakePoint(%s,%s),4326),"
                             " last_seen = NOW() WHERE id = %s",
-                            (lon + random.uniform(-j, j), lat + random.uniform(-j, j), aid),
+                            (new_lon, new_lat, aid),
                         )
                     cur.execute(f"""
                         WITH rules(a_t,b_t,dist_m,kind) AS (VALUES {_RULE_VALUES_SQL}),
