@@ -18,6 +18,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# A single DATABASE_URL (e.g. Neon's connection string) takes precedence.
+# Otherwise fall back to the discrete DB_* vars used for local dev.
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 DB = dict(
     host=os.getenv("DB_HOST", "localhost"),
     port=int(os.getenv("DB_PORT", "5433")),
@@ -51,6 +55,8 @@ GEOM_SELECT = (
 
 
 def get_conn():
+    if DATABASE_URL:
+        return psycopg2.connect(DATABASE_URL)
     return psycopg2.connect(**DB)
 
 

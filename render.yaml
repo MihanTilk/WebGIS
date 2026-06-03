@@ -1,19 +1,18 @@
-# Render Blueprint — provisions Postgres+PostGIS, the Flask API, and the
-# static frontend. The simulator runs locally (Render workers are no longer
-# free); point it at the deployed API by setting API_BASE in your shell.
+# Render Blueprint — runs the Flask API + static frontend on Render (both free,
+# no expiry). The PostGIS database lives on Neon: Render's free Postgres expires
+# every 30 days, Neon's free tier does not. The simulator runs locally; point it
+# at the deployed API by setting API_BASE in your shell.
 #
 # Manual post-deploy steps:
-#   1. Apply sql/01_schema.sql + sql/03_history.sql + sql/04_clustered_seed.sql
-#      + sql/05_interactions.sql against the new DB (External Connection
-#      String from Render → Databases → asset-tracking-db → Connect).
+#   1. Create a Neon project (Postgres 16, region near Singapore), copy its
+#      connection string, and set it as the DATABASE_URL env var on the
+#      asset-tracking-api service (declared below as sync:false). Then seed the
+#      empty Neon DB in one command:
+#        python backend/seed_db.py --dsn "postgresql://USER:PASS@HOST/DB?sslmode=require"
+#      (Applies 01 -> 03 -> 05 -> 04. Note 05 runs before 04: 04 only backfills
+#      the 25 past interactions if the interactions table already exists.)
 #   2. Set the api-root meta tag in frontend/index.html to the deployed
 #      backend URL (Render → asset-tracking-api → top of page), commit, push.
-
-databases:
-  - name: asset-tracking-db
-    plan: free
-    region: singapore
-    postgresMajorVersion: "16"
 
 services:
   # Flask API
@@ -31,26 +30,10 @@ services:
         value: "3.11"
       - key: FLASK_DEBUG
         value: "0"
-      - key: DB_HOST
-        fromDatabase:
-          name: asset-tracking-db
-          property: host
-      - key: DB_PORT
-        fromDatabase:
-          name: asset-tracking-db
-          property: port
-      - key: DB_NAME
-        fromDatabase:
-          name: asset-tracking-db
-          property: database
-      - key: DB_USER
-        fromDatabase:
-          name: asset-tracking-db
-          property: user
-      - key: DB_PASS
-        fromDatabase:
-          name: asset-tracking-db
-          property: password
+      # DATABASE_URL holds the Neon connection string. Set its value in the
+      # Render dashboard (sync:false keeps the secret out of git).
+      - key: DATABASE_URL
+        sync: false
 
   # Static frontend
   - type: web
