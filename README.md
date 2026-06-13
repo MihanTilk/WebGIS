@@ -51,8 +51,7 @@ OpenLayers (browser)  --HTTP/GeoJSON-->  Flask API  --SQL-->  PostgreSQL + PostG
 │   └── 05_interactions.sql      # interactions table + view for typed encounters
 ├── docs/
 │   └── screenshots/
-├── render.yaml            # Render Blueprint (DB + API + static frontend)
-└── create_report.py       # Generates the assignment writeup .docx
+└── render.yaml            # Render Blueprint (DB + API + static frontend)
 ```
 
 ## Quick start (Windows)
